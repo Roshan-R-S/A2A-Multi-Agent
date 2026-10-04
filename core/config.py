@@ -26,6 +26,8 @@ class Settings:
     groq_api_key: str
     groq_model: str
 
+    tavily_api_key: str | None
+
     research_agent_host: str
     research_agent_port: int
 
@@ -63,6 +65,11 @@ settings = Settings(
     groq_model=os.getenv(
         "GROQ_MODEL",
         "openai/gpt-oss-120b",
+    ),
+
+    tavily_api_key=(
+        os.getenv("TAVILY_API_KEY")
+        or None
     ),
 
     research_agent_host=os.getenv(
