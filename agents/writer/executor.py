@@ -12,37 +12,74 @@ from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
 from a2a.types import TaskState
 
-from agents.writer.prompts import WRITER_SYSTEM_PROMPT
-from core.llm import generate_text
+from agents.writer.context import (
+    parse_research_result,
+)
+from agents.writer.generator import (
+    CitationAwareWriter,
+)
 
 
 class WriterAgent:
-    """Core writer logic."""
+    """
+    Citation-aware Writer Agent.
 
-    async def invoke(self, research: str) -> str:
-        return await generate_text(
-            prompt=research,
-            system_prompt=WRITER_SYSTEM_PROMPT,
-            temperature=0.3,
+    Input:
+        Structured ResearchResult JSON
+
+    Output:
+        User-facing prose with [src_n] citations.
+    """
+
+    def __init__(
+        self,
+        writer: CitationAwareWriter | None = None,
+    ) -> None:
+        self.writer = (
+            writer
+            or CitationAwareWriter()
+        )
+
+    async def invoke(
+        self,
+        research_payload: str,
+    ) -> str:
+        research = parse_research_result(
+            research_payload
+        )
+
+        return await self.writer.write(
+            research
         )
 
 
 class WriterAgentExecutor(AgentExecutor):
-    """A2A executor for the Writer Agent."""
-
-    def __init__(self) -> None:
-        self.agent = WriterAgent()
+    def __init__(
+        self,
+        agent: WriterAgent | None = None,
+    ) -> None:
+        self.agent = (
+            agent
+            or WriterAgent()
+        )
 
     async def execute(
         self,
         context: RequestContext,
         event_queue: EventQueue,
     ) -> None:
+
         if context.current_task:
             task = context.current_task
+
         else:
-            task = new_task_from_user_message(context.message)
-            await event_queue.enqueue_event(task)
+            task = new_task_from_user_message(
+                context.message
+            )
+
+            await event_queue.enqueue_event(
+                task
+            )
 
         updater = TaskUpdater(
             event_queue=event_queue,
@@ -53,17 +90,27 @@ class WriterAgentExecutor(AgentExecutor):
         await updater.update_status(
             state=TaskState.TASK_STATE_WORKING,
             message=new_text_message(
-                "Writer Agent is preparing the final response..."
+                "Writer Agent is creating a "
+                "citation-backed response..."
             ),
         )
 
-        research = get_message_text(context.message)
+        user_input = get_message_text(
+            context.message
+        )
 
-        if not research or not research.strip():
-            result = "No research content was provided."
+        if (
+            not user_input
+            or not user_input.strip()
+        ):
+            result = (
+                "No structured research result "
+                "was provided."
+            )
+
         else:
             result = await self.agent.invoke(
-                research.strip()
+                user_input
             )
 
         await updater.add_artifact(
@@ -79,7 +126,7 @@ class WriterAgentExecutor(AgentExecutor):
         await updater.update_status(
             state=TaskState.TASK_STATE_COMPLETED,
             message=new_text_message(
-                "Writing completed."
+                "Citation-backed response completed."
             ),
         )
 

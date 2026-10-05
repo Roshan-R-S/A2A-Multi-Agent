@@ -20,7 +20,7 @@ writer_skill = AgentSkill(
         "summarization",
         "explanation",
     ],
-    input_modes=["text/plain"],
+    input_modes=["application/json"],
     output_modes=["text/plain"],
     examples=[
         "Rewrite this research brief for a beginner.",
@@ -37,7 +37,7 @@ writer_agent_card = AgentCard(
         "clear and polished final responses."
     ),
     version="0.1.0",
-    default_input_modes=["text/plain"],
+    default_input_modes=["application/json"],
     default_output_modes=["text/plain"],
     capabilities=AgentCapabilities(
         streaming=True,

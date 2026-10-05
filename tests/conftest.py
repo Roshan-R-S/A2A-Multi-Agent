@@ -12,6 +12,11 @@ os.environ.setdefault(
 )
 
 os.environ.setdefault(
+    "TAVILY_API_KEY",
+    "test-tavily-key",
+)
+
+os.environ.setdefault(
     "RESEARCH_AGENT_HOST",
     "127.0.0.1",
 )

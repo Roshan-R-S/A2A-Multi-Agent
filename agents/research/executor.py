@@ -12,38 +12,81 @@ from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
 from a2a.types import TaskState
 
-from core.llm import generate_text
-from agents.research.prompts import RESEARCH_SYSTEM_PROMPT
+from agents.research.factory import (
+    create_research_pipeline,
+)
+from agents.research.pipeline import (
+    ResearchPipeline,
+)
 
 
 class ResearchAgent:
-    """Core research logic."""
+    """
+    Web-backed Research Agent.
 
-    async def invoke(self, topic: str) -> str:
-        return await generate_text(
-            prompt=topic,
-            system_prompt=RESEARCH_SYSTEM_PROMPT,
-            temperature=0.2,
+    The agent returns a structured ResearchResult JSON document
+    containing claims, evidence, sources, and caveats.
+    """
+
+    def __init__(
+        self,
+        pipeline: ResearchPipeline | None = None,
+    ) -> None:
+        self.pipeline = (
+            pipeline
+            or create_research_pipeline()
+        )
+
+    async def invoke(
+        self,
+        question: str,
+    ) -> str:
+        question = question.strip()
+
+        if not question:
+            raise ValueError(
+                "Research question cannot be empty."
+            )
+
+        result = await self.pipeline.run(
+            question,
+            max_results=5,
+            max_evidence=10,
+            max_claims=8,
+        )
+
+        return result.model_dump_json(
+            indent=2
         )
 
 
 class ResearchAgentExecutor(AgentExecutor):
-    """A2A executor for the Research Agent."""
-
-    def __init__(self) -> None:
-        self.agent = ResearchAgent()
+    def __init__(
+        self,
+        agent: ResearchAgent | None = None,
+    ) -> None:
+        self.agent = (
+            agent
+            or ResearchAgent()
+        )
 
     async def execute(
         self,
         context: RequestContext,
         event_queue: EventQueue,
     ) -> None:
-        # Reuse an existing task when present.
+
         if context.current_task:
             task = context.current_task
+
         else:
-            task = new_task_from_user_message(context.message)
-            await event_queue.enqueue_event(task)
+            task = new_task_from_user_message(
+                context.message
+            )
+
+            await event_queue.enqueue_event(
+                task
+            )
 
         updater = TaskUpdater(
             event_queue=event_queue,
@@ -54,31 +97,43 @@ class ResearchAgentExecutor(AgentExecutor):
         await updater.update_status(
             state=TaskState.TASK_STATE_WORKING,
             message=new_text_message(
-                "Research Agent is analyzing the topic..."
+                "Research Agent is searching "
+                "and analyzing sources..."
             ),
         )
 
-        user_input = get_message_text(context.message)
+        user_input = get_message_text(
+            context.message
+        )
 
-        if not user_input or not user_input.strip():
-            result = "No research topic was provided."
+        if (
+            not user_input
+            or not user_input.strip()
+        ):
+            result = (
+                '{"error": '
+                '"No research question was provided."}'
+            )
+
         else:
-            result = await self.agent.invoke(user_input.strip())
+            result = await self.agent.invoke(
+                user_input.strip()
+            )
 
         await updater.add_artifact(
             parts=[
                 new_text_part(
                     text=result,
-                    media_type="text/plain",
+                    media_type="application/json",
                 )
             ],
-            name="research-brief",
+            name="research-result",
         )
 
         await updater.update_status(
             state=TaskState.TASK_STATE_COMPLETED,
             message=new_text_message(
-                "Research completed."
+                "Web-backed research completed."
             ),
         )
 
