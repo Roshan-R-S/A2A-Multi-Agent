@@ -1,5 +1,4 @@
 ﻿from dataclasses import dataclass
-import json
 import logging
 import time
 
@@ -9,6 +8,9 @@ from orchestrator.discovery import (
     AgentDiscoveryError,
     DiscoveredAgent,
     discover_agent,
+)
+from orchestrator.revision_loop import (
+    RevisionLoop,
 )
 
 
@@ -26,8 +28,21 @@ class ResearchWriterWorkflow:
     def __init__(
         self,
         client: A2AAgentClient | None = None,
+        max_revisions: int = 2,
     ) -> None:
-        self.client = client or A2AAgentClient()
+        if max_revisions < 0:
+            raise ValueError(
+                "max_revisions cannot be negative."
+            )
+
+        self.client = (
+            client
+            or A2AAgentClient()
+        )
+
+        self.max_revisions = (
+            max_revisions
+        )
 
     async def _discover_required_agents(
         self,
@@ -80,7 +95,8 @@ class ResearchWriterWorkflow:
             != "JSONRPC"
         ):
             raise AgentDiscoveryError(
-                "Research Agent does not support JSONRPC."
+                "Research Agent does not "
+                "support JSONRPC."
             )
 
         if (
@@ -88,7 +104,8 @@ class ResearchWriterWorkflow:
             != "JSONRPC"
         ):
             raise AgentDiscoveryError(
-                "Writer Agent does not support JSONRPC."
+                "Writer Agent does not "
+                "support JSONRPC."
             )
 
         if (
@@ -96,7 +113,8 @@ class ResearchWriterWorkflow:
             != "JSONRPC"
         ):
             raise AgentDiscoveryError(
-                "Verifier Agent does not support JSONRPC."
+                "Verifier Agent does not "
+                "support JSONRPC."
             )
 
         if (
@@ -114,7 +132,8 @@ class ResearchWriterWorkflow:
         ):
             raise AgentDiscoveryError(
                 "Writer Agent does not advertise "
-                "the required 'write_explanation' skill."
+                "the required "
+                "'write_explanation' skill."
             )
 
         if (
@@ -123,7 +142,8 @@ class ResearchWriterWorkflow:
         ):
             raise AgentDiscoveryError(
                 "Verifier Agent does not advertise "
-                "the required 'verify_answer' skill."
+                "the required "
+                "'verify_answer' skill."
             )
 
         logger.info(
@@ -136,66 +156,6 @@ class ResearchWriterWorkflow:
             verifier,
         )
 
-    @staticmethod
-    def _parse_verification(
-        raw_result: str,
-    ) -> dict:
-        try:
-            result = json.loads(
-                raw_result
-            )
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(
-                "Verifier returned invalid JSON."
-            ) from exc
-
-        if not isinstance(
-            result,
-            dict,
-        ):
-            raise RuntimeError(
-                "Verifier result must be a JSON object."
-            )
-
-        verdict = result.get(
-            "verdict"
-        )
-
-        if verdict not in {
-            "PASS",
-            "FAIL",
-        }:
-            raise RuntimeError(
-                "Verifier returned an invalid verdict."
-            )
-
-        issues = result.get(
-            "issues",
-        )
-
-        if not isinstance(
-            issues,
-            list,
-        ):
-            raise RuntimeError(
-                "Verifier issues must be a list."
-            )
-
-        feedback = result.get(
-            "feedback",
-            "",
-        )
-
-        if not isinstance(
-            feedback,
-            str,
-        ):
-            raise RuntimeError(
-                "Verifier feedback must be a string."
-            )
-
-        return result
-
     async def run(
         self,
         question: str,
@@ -207,7 +167,9 @@ class ResearchWriterWorkflow:
                 "Question cannot be empty."
             )
 
-        workflow_start = time.perf_counter()
+        workflow_start = (
+            time.perf_counter()
+        )
 
         logger.info(
             "Workflow started | question=%r",
@@ -218,20 +180,13 @@ class ResearchWriterWorkflow:
             research_agent,
             writer_agent,
             verifier_agent,
-        ) = await self._discover_required_agents()
+        ) = (
+            await self._discover_required_agents()
+        )
 
-        research_prompt = f"""
-Research the following user question.
-
-User question:
-{question}
-
-Produce a structured research brief containing the information
-a Writer Agent would need to create a high-quality final answer.
-
-Do not invent sources, statistics, or claims that you cannot
-support from your existing knowledge.
-""".strip()
+        # -------------------------------------------------
+        # 1. Research
+        # -------------------------------------------------
 
         logger.info(
             "Research request started."
@@ -244,7 +199,7 @@ support from your existing knowledge.
         research = (
             await self.client.send_text(
                 research_agent.url,
-                research_prompt,
+                question,
             )
         )
 
@@ -254,28 +209,12 @@ support from your existing knowledge.
             - research_start,
         )
 
-        writer_prompt = f"""
-Create the final answer to the original user question using the
-research brief below.
-
-ORIGINAL USER QUESTION:
-{question}
-
-RESEARCH BRIEF:
-{research}
-
-Instructions:
-- Answer the original question directly.
-- Preserve important facts and caveats.
-- Make the explanation clear and natural.
-- Do not claim that you independently researched anything.
-- Do not invent new factual claims.
-- Do not mention the internal multi-agent workflow unless the
-  user specifically asks about it.
-""".strip()
+        # -------------------------------------------------
+        # 2. Initial Writer draft
+        # -------------------------------------------------
 
         logger.info(
-            "Writer request started."
+            "Initial Writer request started."
         )
 
         writer_start = (
@@ -285,89 +224,51 @@ Instructions:
         draft_answer = (
             await self.client.send_text(
                 writer_agent.url,
-                writer_prompt,
+                research,
             )
         )
 
         logger.info(
-            "Writer completed in %.2f seconds.",
+            "Initial Writer completed "
+            "in %.2f seconds.",
             time.perf_counter()
             - writer_start,
         )
 
-        verifier_prompt = f"""
-Verify the Writer Agent's draft against the original user
-question and the Research Agent's brief.
-
-ORIGINAL USER QUESTION:
-{question}
-
-RESEARCH BRIEF:
-{research}
-
-WRITER DRAFT:
-{draft_answer}
-
-Return your structured verification result.
-""".strip()
+        # -------------------------------------------------
+        # 3. Verification + automatic revision loop
+        # -------------------------------------------------
 
         logger.info(
-            "Verifier request started."
+            "Verification/revision loop started."
         )
 
-        verifier_start = (
+        revision_start = (
             time.perf_counter()
         )
 
-        raw_verification = (
-            await self.client.send_text(
-                verifier_agent.url,
-                verifier_prompt,
+        revision_loop = RevisionLoop(
+            client=self.client,
+            writer_url=writer_agent.url,
+            verifier_url=verifier_agent.url,
+            max_revisions=(
+                self.max_revisions
+            ),
+        )
+
+        final_answer = (
+            await revision_loop.run(
+                research_json=research,
+                initial_draft=draft_answer,
             )
         )
 
         logger.info(
-            "Verifier completed in %.2f seconds.",
+            "Verification/revision loop "
+            "completed in %.2f seconds.",
             time.perf_counter()
-            - verifier_start,
+            - revision_start,
         )
-
-        verification = (
-            self._parse_verification(
-                raw_verification
-            )
-        )
-
-        verdict = verification[
-            "verdict"
-        ]
-
-        logger.info(
-            "Verification verdict: %s",
-            verdict,
-        )
-
-        if verdict == "FAIL":
-            issues = verification.get(
-                "issues",
-                [],
-            )
-
-            feedback = verification.get(
-                "feedback",
-                "",
-            )
-
-            issue_text = "\n".join(
-                f"- {issue}"
-                for issue in issues
-            )
-
-            raise RuntimeError(
-                "Verifier rejected the Writer response."
-                f"\n\nIssues:\n{issue_text}"
-                f"\n\nFeedback:\n{feedback}"
-            )
 
         logger.info(
             "Workflow completed successfully "
@@ -379,5 +280,5 @@ Return your structured verification result.
         return WorkflowResult(
             question=question,
             research=research,
-            final_answer=draft_answer,
+            final_answer=final_answer,
         )

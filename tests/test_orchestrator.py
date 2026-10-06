@@ -1,22 +1,43 @@
-﻿import httpx
+﻿import json
+from datetime import datetime, timezone
+
+import httpx
 import pytest
 
 import orchestrator.workflow as workflow_module
+from agents.research.schemas import (
+    Claim,
+    Evidence,
+    ResearchResult,
+    Source,
+)
 from core.config import settings
 from orchestrator.discovery import (
     AgentDiscoveryError,
     DiscoveredAgent,
     discover_agent,
 )
-from orchestrator.workflow import ResearchWriterWorkflow
+from orchestrator.workflow import (
+    ResearchWriterWorkflow,
+)
 
 
 class FakeA2AClient:
-    def __init__(self, responses):
-        self.responses = list(responses)
+    def __init__(
+        self,
+        responses,
+    ):
+        self.responses = list(
+            responses
+        )
+
         self.calls = []
 
-    async def send_text(self, agent_url: str, text: str) -> str:
+    async def send_text(
+        self,
+        agent_url: str,
+        text: str,
+    ) -> str:
         self.calls.append(
             {
                 "agent_url": agent_url,
@@ -26,7 +47,8 @@ class FakeA2AClient:
 
         if not self.responses:
             raise RuntimeError(
-                "FakeA2AClient has no response left."
+                "FakeA2AClient has "
+                "no response left."
             )
 
         return self.responses.pop(0)
@@ -39,12 +61,155 @@ def make_agent(
 ) -> DiscoveredAgent:
     return DiscoveredAgent(
         name=name,
-        description=f"{name} description",
+        description=(
+            f"{name} description"
+        ),
         version="0.1.0",
         url=url,
         protocol_binding="JSONRPC",
         protocol_version="1.0",
         skills=skills,
+    )
+
+
+def make_research_result() -> ResearchResult:
+    source = Source(
+        id="src_1",
+        title="Example Source",
+        url="https://example.com/rag",
+        publisher="example.com",
+        published_at=None,
+        retrieved_at=datetime(
+            2026,
+            10,
+            6,
+            tzinfo=timezone.utc,
+        ),
+        source_type="web",
+    )
+
+    evidence = Evidence(
+        id="evidence_1",
+        source_id="src_1",
+        text=(
+            "RAG can reduce hallucinations "
+            "by grounding answers."
+        ),
+        relevance_score=1.0,
+    )
+
+    claim = Claim(
+        id="claim_1",
+        text=(
+            "RAG can reduce hallucinations."
+        ),
+        confidence="high",
+        evidence_ids=[
+            "evidence_1",
+        ],
+    )
+
+    return ResearchResult(
+        question="What is RAG?",
+        summary=(
+            "RAG combines retrieval "
+            "with generation."
+        ),
+        sources=[
+            source,
+        ],
+        evidence=[
+            evidence,
+        ],
+        claims=[
+            claim,
+        ],
+        caveats=[
+            "RAG does not guarantee accuracy."
+        ],
+    )
+
+
+def pass_result() -> str:
+    return json.dumps(
+        {
+            "verdict": "PASS",
+            "issues": [],
+            "feedback": "",
+        }
+    )
+
+
+def fail_result() -> str:
+    return json.dumps(
+        {
+            "verdict": "FAIL",
+            "issues": [
+                {
+                    "type": (
+                        "overstated_certainty"
+                    ),
+                    "statement": (
+                        "RAG eliminates "
+                        "hallucinations."
+                    ),
+                    "source_ids": [
+                        "src_1"
+                    ],
+                    "feedback": (
+                        "Research supports "
+                        "reduction, not elimination."
+                    ),
+                }
+            ],
+            "feedback": (
+                "Use less absolute language."
+            ),
+        }
+    )
+
+
+async def fake_discover_all(
+    base_url,
+):
+    if (
+        base_url
+        == settings.research_agent_url
+    ):
+        return make_agent(
+            name="Research Agent",
+            url=settings.research_agent_url,
+            skills=(
+                "research_topic",
+            ),
+        )
+
+    if (
+        base_url
+        == settings.writer_agent_url
+    ):
+        return make_agent(
+            name="Writer Agent",
+            url=settings.writer_agent_url,
+            skills=(
+                "write_explanation",
+            ),
+        )
+
+    if (
+        base_url
+        == settings.verifier_agent_url
+    ):
+        return make_agent(
+            name="Verifier Agent",
+            url=settings.verifier_agent_url,
+            skills=(
+                "verify_answer",
+            ),
+        )
+
+    raise AssertionError(
+        f"Unexpected URL: {base_url}"
     )
 
 
@@ -56,7 +221,9 @@ async def test_discover_agent_parses_valid_card():
         "version": "0.1.0",
         "supportedInterfaces": [
             {
-                "url": "http://127.0.0.1:8001",
+                "url": (
+                    "http://127.0.0.1:8001"
+                ),
                 "protocolBinding": "JSONRPC",
                 "protocolVersion": "1.0",
             }
@@ -84,10 +251,24 @@ async def test_discover_agent_parses_valid_card():
             client=client,
         )
 
-    assert result.name == "Research Agent"
-    assert result.url == "http://127.0.0.1:8001"
-    assert result.protocol_binding == "JSONRPC"
-    assert result.protocol_version == "1.0"
+    assert result.name == (
+        "Research Agent"
+    )
+
+    assert result.url == (
+        "http://127.0.0.1:8001"
+    )
+
+    assert (
+        result.protocol_binding
+        == "JSONRPC"
+    )
+
+    assert (
+        result.protocol_version
+        == "1.0"
+    )
+
     assert result.skills == (
         "research_topic",
     )
@@ -101,7 +282,9 @@ async def test_discover_agent_connection_failure():
             request=request,
         )
 
-    transport = httpx.MockTransport(handler)
+    transport = httpx.MockTransport(
+        handler
+    )
 
     async with httpx.AsyncClient(
         transport=transport
@@ -111,7 +294,10 @@ async def test_discover_agent_connection_failure():
             match="Could not connect",
         ):
             await discover_agent(
-                "http://127.0.0.1:9999",
+                (
+                    "http://127.0.0.1:"
+                    "9999"
+                ),
                 client=client,
             )
 
@@ -124,7 +310,9 @@ async def test_discover_agent_timeout():
             request=request,
         )
 
-    transport = httpx.MockTransport(handler)
+    transport = httpx.MockTransport(
+        handler
+    )
 
     async with httpx.AsyncClient(
         transport=transport
@@ -134,7 +322,10 @@ async def test_discover_agent_timeout():
             match="timed out",
         ):
             await discover_agent(
-                "http://127.0.0.1:9999",
+                (
+                    "http://127.0.0.1:"
+                    "9999"
+                ),
                 client=client,
             )
 
@@ -143,7 +334,9 @@ async def test_discover_agent_timeout():
 async def test_discover_agent_rejects_missing_interface():
     card = {
         "name": "Broken Agent",
-        "description": "Missing interface.",
+        "description": (
+            "Missing interface."
+        ),
         "version": "0.1.0",
         "supportedInterfaces": [],
         "skills": [],
@@ -162,10 +355,15 @@ async def test_discover_agent_rejects_missing_interface():
     ) as client:
         with pytest.raises(
             AgentDiscoveryError,
-            match="advertised no interfaces",
+            match=(
+                "advertised no interfaces"
+            ),
         ):
             await discover_agent(
-                "http://127.0.0.1:9999",
+                (
+                    "http://127.0.0.1:"
+                    "9999"
+                ),
                 client=client,
             )
 
@@ -180,7 +378,9 @@ async def test_workflow_rejects_empty_question():
         ValueError,
         match="Question cannot be empty",
     ):
-        await workflow.run("   ")
+        await workflow.run(
+            "   "
+        )
 
 
 @pytest.mark.asyncio
@@ -196,23 +396,38 @@ async def test_workflow_rejects_missing_research_skill(
     writer = make_agent(
         name="Writer Agent",
         url=settings.writer_agent_url,
-        skills=("write_explanation",),
+        skills=(
+            "write_explanation",
+        ),
     )
 
     verifier = make_agent(
         name="Verifier Agent",
         url=settings.verifier_agent_url,
-        skills=("verify_answer",),
+        skills=(
+            "verify_answer",
+        ),
     )
 
-    async def fake_discover(base_url):
-        if base_url == settings.research_agent_url:
+    async def fake_discover(
+        base_url,
+    ):
+        if (
+            base_url
+            == settings.research_agent_url
+        ):
             return research
 
-        if base_url == settings.writer_agent_url:
+        if (
+            base_url
+            == settings.writer_agent_url
+        ):
             return writer
 
-        if base_url == settings.verifier_agent_url:
+        if (
+            base_url
+            == settings.verifier_agent_url
+        ):
             return verifier
 
         raise AssertionError(
@@ -245,13 +460,17 @@ async def test_workflow_rejects_missing_verifier_skill(
     research = make_agent(
         name="Research Agent",
         url=settings.research_agent_url,
-        skills=("research_topic",),
+        skills=(
+            "research_topic",
+        ),
     )
 
     writer = make_agent(
         name="Writer Agent",
         url=settings.writer_agent_url,
-        skills=("write_explanation",),
+        skills=(
+            "write_explanation",
+        ),
     )
 
     verifier = make_agent(
@@ -260,14 +479,25 @@ async def test_workflow_rejects_missing_verifier_skill(
         skills=(),
     )
 
-    async def fake_discover(base_url):
-        if base_url == settings.research_agent_url:
+    async def fake_discover(
+        base_url,
+    ):
+        if (
+            base_url
+            == settings.research_agent_url
+        ):
             return research
 
-        if base_url == settings.writer_agent_url:
+        if (
+            base_url
+            == settings.writer_agent_url
+        ):
             return writer
 
-        if base_url == settings.verifier_agent_url:
+        if (
+            base_url
+            == settings.verifier_agent_url
+        ):
             return verifier
 
         raise AssertionError(
@@ -297,7 +527,9 @@ async def test_workflow_rejects_missing_verifier_skill(
 async def test_workflow_propagates_discovery_failure(
     monkeypatch,
 ):
-    async def fake_discover(base_url):
+    async def fake_discover(
+        base_url,
+    ):
         raise AgentDiscoveryError(
             "Discovery failed."
         )
@@ -325,53 +557,27 @@ async def test_workflow_propagates_discovery_failure(
 async def test_complete_research_writer_verifier_workflow(
     monkeypatch,
 ):
-    research = make_agent(
-        name="Research Agent",
-        url=settings.research_agent_url,
-        skills=("research_topic",),
-    )
-
-    writer = make_agent(
-        name="Writer Agent",
-        url=settings.writer_agent_url,
-        skills=("write_explanation",),
-    )
-
-    verifier = make_agent(
-        name="Verifier Agent",
-        url=settings.verifier_agent_url,
-        skills=("verify_answer",),
-    )
-
-    async def fake_discover(base_url):
-        if base_url == settings.research_agent_url:
-            return research
-
-        if base_url == settings.writer_agent_url:
-            return writer
-
-        if base_url == settings.verifier_agent_url:
-            return verifier
-
-        raise AssertionError(
-            f"Unexpected URL: {base_url}"
-        )
-
     monkeypatch.setattr(
         workflow_module,
         "discover_agent",
-        fake_discover,
+        fake_discover_all,
+    )
+
+    research_json = (
+        make_research_result()
+        .model_dump_json()
+    )
+
+    draft = (
+        "RAG can reduce hallucinations. "
+        "[src_1]"
     )
 
     fake_client = FakeA2AClient(
         [
-            "Mock research brief",
-            "Mock final answer",
-            (
-                '{"verdict":"PASS",'
-                '"issues":[],'
-                '"feedback":""}'
-            ),
+            research_json,
+            draft,
+            pass_result(),
         ]
     )
 
@@ -383,93 +589,100 @@ async def test_complete_research_writer_verifier_workflow(
         "What is RAG?"
     )
 
-    assert result.question == "What is RAG?"
-    assert result.research == (
-        "Mock research brief"
-    )
-    assert result.final_answer == (
-        "Mock final answer"
+    assert result.question == (
+        "What is RAG?"
     )
 
-    assert len(fake_client.calls) == 3
+    assert result.research == (
+        research_json
+    )
+
+    assert result.final_answer == draft
+
+    assert len(
+        fake_client.calls
+    ) == 3
 
     assert (
-        fake_client.calls[0]["agent_url"]
+        fake_client.calls[0][
+            "agent_url"
+        ]
         == settings.research_agent_url
     )
 
     assert (
-        fake_client.calls[1]["agent_url"]
+        fake_client.calls[0]["text"]
+        == "What is RAG?"
+    )
+
+    assert (
+        fake_client.calls[1][
+            "agent_url"
+        ]
         == settings.writer_agent_url
     )
 
     assert (
-        fake_client.calls[2]["agent_url"]
+        fake_client.calls[1]["text"]
+        == research_json
+    )
+
+    assert (
+        fake_client.calls[2][
+            "agent_url"
+        ]
         == settings.verifier_agent_url
     )
 
-    assert (
-        "Mock research brief"
-        in fake_client.calls[1]["text"]
+    verifier_payload = json.loads(
+        fake_client.calls[2]["text"]
     )
 
     assert (
-        "Mock final answer"
-        in fake_client.calls[2]["text"]
+        verifier_payload["draft"]
+        == draft
+    )
+
+    assert (
+        verifier_payload[
+            "research"
+        ]["question"]
+        == "What is RAG?"
     )
 
 
 @pytest.mark.asyncio
-async def test_workflow_rejects_failed_verification(
+async def test_workflow_revises_failed_verification(
     monkeypatch,
 ):
-    research = make_agent(
-        name="Research Agent",
-        url=settings.research_agent_url,
-        skills=("research_topic",),
-    )
-
-    writer = make_agent(
-        name="Writer Agent",
-        url=settings.writer_agent_url,
-        skills=("write_explanation",),
-    )
-
-    verifier = make_agent(
-        name="Verifier Agent",
-        url=settings.verifier_agent_url,
-        skills=("verify_answer",),
-    )
-
-    async def fake_discover(base_url):
-        if base_url == settings.research_agent_url:
-            return research
-
-        if base_url == settings.writer_agent_url:
-            return writer
-
-        if base_url == settings.verifier_agent_url:
-            return verifier
-
-        raise AssertionError(
-            f"Unexpected URL: {base_url}"
-        )
-
     monkeypatch.setattr(
         workflow_module,
         "discover_agent",
-        fake_discover,
+        fake_discover_all,
+    )
+
+    research_json = (
+        make_research_result()
+        .model_dump_json()
+    )
+
+    initial_draft = (
+        "RAG eliminates hallucinations. "
+        "[src_1]"
+    )
+
+    revised_draft = (
+        "RAG can reduce hallucinations. "
+        "[src_1]"
     )
 
     fake_client = FakeA2AClient(
         [
-            "Mock research brief",
-            "Bad writer answer",
-            (
-                '{"verdict":"FAIL",'
-                '"issues":["Unsupported claim."],'
-                '"feedback":"Remove the unsupported claim."}'
-            ),
+            research_json,
+            initial_draft,
+            fail_result(),
+            revised_draft,
+            pass_result(),
         ]
     )
 
@@ -477,12 +690,55 @@ async def test_workflow_rejects_failed_verification(
         client=fake_client
     )
 
-    with pytest.raises(
-        RuntimeError,
-        match="Verifier rejected",
-    ):
-        await workflow.run(
-            "What is RAG?"
-        )
+    result = await workflow.run(
+        "What is RAG?"
+    )
 
-    assert len(fake_client.calls) == 3
+    assert (
+        result.final_answer
+        == revised_draft
+    )
+
+    assert len(
+        fake_client.calls
+    ) == 5
+
+    assert (
+        fake_client.calls[2][
+            "agent_url"
+        ]
+        == settings.verifier_agent_url
+    )
+
+    assert (
+        fake_client.calls[3][
+            "agent_url"
+        ]
+        == settings.writer_agent_url
+    )
+
+    revision_payload = json.loads(
+        fake_client.calls[3]["text"]
+    )
+
+    assert (
+        revision_payload["mode"]
+        == "revise"
+    )
+
+    assert (
+        revision_payload["draft"]
+        == initial_draft
+    )
+
+    assert (
+        revision_payload["feedback"]
+        == "Use less absolute language."
+    )
+
+    assert (
+        fake_client.calls[4][
+            "agent_url"
+        ]
+        == settings.verifier_agent_url
+    )

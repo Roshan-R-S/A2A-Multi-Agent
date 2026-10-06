@@ -83,6 +83,7 @@ source citations.
                 first_result,
                 research,
             )
+
             return first_result
 
         except RuntimeError as first_error:
@@ -120,13 +121,16 @@ Mandatory requirements:
                 temperature=0.0,
             )
 
-            repaired_result = repaired_result.strip()
+            repaired_result = (
+                repaired_result.strip()
+            )
 
             try:
                 self._validate_response(
                     repaired_result,
                     research,
                 )
+
             except RuntimeError as second_error:
                 raise RuntimeError(
                     "Writer failed citation validation "
@@ -135,6 +139,63 @@ Mandatory requirements:
                 ) from second_error
 
             return repaired_result
+
+    async def revise(
+        self,
+        request,
+    ) -> str:
+        from agents.writer.revision import (
+            build_revision_context,
+        )
+
+        context = build_revision_context(
+            request
+        )
+
+        allowed_sources = " ".join(
+            f"[{source.id}]"
+            for source
+            in request.research.sources
+        )
+
+        prompt = f"""
+Revise the existing answer using the verifier feedback.
+
+You must correct every verifier issue.
+
+Use ONLY the supplied research.
+
+Do not introduce outside facts.
+
+Preserve accurate content from the existing draft.
+
+Preserve important research caveats.
+
+Every factual statement must use appropriate source
+citations.
+
+ALLOWED SOURCE CITATIONS:
+{allowed_sources}
+
+{context}
+
+Return only the corrected final answer.
+""".strip()
+
+        result = await generate_text(
+            prompt=prompt,
+            system_prompt=WRITER_SYSTEM_PROMPT,
+            temperature=0.0,
+        )
+
+        result = result.strip()
+
+        self._validate_response(
+            result,
+            request.research,
+        )
+
+        return result
 
     @classmethod
     def _validate_response(
@@ -178,7 +239,10 @@ Mandatory requirements:
             for source in research.sources
         }
 
-        unknown = citations - known_sources
+        unknown = (
+            citations
+            - known_sources
+        )
 
         if unknown:
             unknown_list = ", ".join(

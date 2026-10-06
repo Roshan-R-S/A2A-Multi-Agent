@@ -1,133 +1,298 @@
-import json
+from datetime import datetime, timezone
 
 import pytest
 from starlette.testclient import TestClient
 
+from agents.research.schemas import (
+    Claim,
+    Evidence,
+    ResearchResult,
+    Source,
+)
 from agents.verifier.app import app
-from agents.verifier.executor import VerifierAgent
+from agents.verifier.executor import (
+    VerifierAgent,
+)
+from agents.verifier.schemas import (
+    VerificationRequest,
+    VerificationResult,
+)
+
+
+class FakeEvidenceAwareVerifier:
+    def __init__(
+        self,
+        result: VerificationResult,
+    ) -> None:
+        self.result = result
+        self.received = None
+
+    async def verify(
+        self,
+        request: VerificationRequest,
+    ) -> VerificationResult:
+        self.received = request
+        return self.result
+
+
+def make_research_result() -> ResearchResult:
+    source = Source(
+        id="src_1",
+        title="Example Source",
+        url="https://example.com/rag",
+        publisher="example.com",
+        published_at=None,
+        retrieved_at=datetime(
+            2026,
+            10,
+            6,
+            tzinfo=timezone.utc,
+        ),
+        source_type="web",
+    )
+
+    evidence = Evidence(
+        id="evidence_1",
+        source_id="src_1",
+        text=(
+            "RAG retrieves relevant information "
+            "before generation."
+        ),
+        relevance_score=1.0,
+    )
+
+    claim = Claim(
+        id="claim_1",
+        text=(
+            "RAG uses retrieved information "
+            "during generation."
+        ),
+        confidence="high",
+        evidence_ids=[
+            "evidence_1",
+        ],
+    )
+
+    return ResearchResult(
+        question="What is RAG?",
+        summary=(
+            "RAG combines retrieval "
+            "with generation."
+        ),
+        sources=[
+            source,
+        ],
+        evidence=[
+            evidence,
+        ],
+        claims=[
+            claim,
+        ],
+        caveats=[
+            "Retrieval quality matters."
+        ],
+    )
+
+
+def make_payload() -> str:
+    request = VerificationRequest(
+        research=make_research_result(),
+        draft=(
+            "RAG uses retrieved information "
+            "during generation. [src_1]"
+        ),
+    )
+
+    return request.model_dump_json()
 
 
 def test_verifier_health_endpoint():
-    with TestClient(app) as client:
-        response = client.get("/health")
+    client = TestClient(app)
+
+    response = client.get(
+        "/health"
+    )
 
     assert response.status_code == 200
 
-    assert response.json() == {
-        "status": "ok",
-        "agent": "Verifier Agent",
-        "version": "0.1.0",
-    }
+    data = response.json()
+
+    assert data["status"] == "ok"
+    assert data["agent"] == "Verifier Agent"
 
 
 def test_verifier_agent_card_endpoint():
-    with TestClient(app) as client:
-        response = client.get(
-            "/.well-known/agent-card.json"
-        )
+    client = TestClient(app)
+
+    response = client.get(
+        "/.well-known/agent-card.json"
+    )
 
     assert response.status_code == 200
 
-    card = response.json()
+    data = response.json()
 
-    assert card["name"] == "Verifier Agent"
+    assert data["name"] == "Verifier Agent"
+
+    assert data["defaultInputModes"] == [
+        "application/json"
+    ]
+
+    assert data["defaultOutputModes"] == [
+        "application/json"
+    ]
 
     assert (
-        card["supportedInterfaces"][0]["protocolBinding"]
-        == "JSONRPC"
-    )
-
-    skill_ids = {
-        skill["id"]
-        for skill in card["skills"]
-    }
-
-    assert "verify_answer" in skill_ids
-
-
-def test_verifier_accepts_valid_pass_json():
-    raw = '''
-    {
-        "verdict": "PASS",
-        "issues": [],
-        "feedback": ""
-    }
-    '''
-
-    result = VerifierAgent._validate_result(raw)
-
-    data = json.loads(result)
-
-    assert data["verdict"] == "PASS"
-    assert data["issues"] == []
-    assert data["feedback"] == ""
-
-
-def test_verifier_accepts_valid_fail_json():
-    raw = '''
-    {
-        "verdict": "FAIL",
-        "issues": [
-            "Unsupported claim."
-        ],
-        "feedback": "Remove the claim."
-    }
-    '''
-
-    result = VerifierAgent._validate_result(raw)
-
-    data = json.loads(result)
-
-    assert data["verdict"] == "FAIL"
-    assert data["issues"] == [
-        "Unsupported claim."
-    ]
-    assert data["feedback"] == (
-        "Remove the claim."
+        data["skills"][0]["id"]
+        == "verify_answer"
     )
 
 
-def test_verifier_handles_markdown_json_fence():
-    raw = '''
-```json
-{
-    "verdict": "PASS",
-    "issues": [],
-    "feedback": ""
-}
-```
-    '''
+@pytest.mark.asyncio
+async def test_verifier_agent_parses_request():
+    fake = FakeEvidenceAwareVerifier(
+        VerificationResult(
+            verdict="PASS",
+            issues=[],
+            feedback="",
+        )
+    )
 
-    result = VerifierAgent._validate_result(raw)
+    agent = VerifierAgent(
+        verifier=fake
+    )
 
-    data = json.loads(result)
+    await agent.invoke(
+        make_payload()
+    )
 
-    assert data["verdict"] == "PASS"
-    assert data["issues"] == []
-    assert data["feedback"] == ""
+    assert fake.received is not None
+
+    assert (
+        fake.received.research.question
+        == "What is RAG?"
+    )
+
+    assert (
+        "[src_1]"
+        in fake.received.draft
+    )
 
 
-def test_verifier_rejects_invalid_json():
+@pytest.mark.asyncio
+async def test_verifier_agent_returns_pass_json():
+    fake = FakeEvidenceAwareVerifier(
+        VerificationResult(
+            verdict="PASS",
+            issues=[],
+            feedback="",
+        )
+    )
+
+    agent = VerifierAgent(
+        verifier=fake
+    )
+
+    result = await agent.invoke(
+        make_payload()
+    )
+
+    parsed = (
+        VerificationResult
+        .model_validate_json(
+            result
+        )
+    )
+
+    assert parsed.verdict == "PASS"
+    assert parsed.issues == []
+
+
+@pytest.mark.asyncio
+async def test_verifier_agent_returns_fail_json():
+    fake = FakeEvidenceAwareVerifier(
+        VerificationResult(
+            verdict="FAIL",
+            issues=[
+                {
+                    "type": "missing_citation",
+                    "statement": (
+                        "A factual statement."
+                    ),
+                    "source_ids": [],
+                    "feedback": (
+                        "Add a citation."
+                    ),
+                }
+            ],
+            feedback=(
+                "Revise the answer."
+            ),
+        )
+    )
+
+    agent = VerifierAgent(
+        verifier=fake
+    )
+
+    result = await agent.invoke(
+        make_payload()
+    )
+
+    parsed = (
+        VerificationResult
+        .model_validate_json(
+            result
+        )
+    )
+
+    assert parsed.verdict == "FAIL"
+
+    assert (
+        parsed.issues[0].type
+        == "missing_citation"
+    )
+
+
+@pytest.mark.asyncio
+async def test_verifier_agent_rejects_empty_input():
+    agent = VerifierAgent(
+        verifier=FakeEvidenceAwareVerifier(
+            VerificationResult(
+                verdict="PASS",
+                issues=[],
+                feedback="",
+            )
+        )
+    )
+
     with pytest.raises(
-        RuntimeError,
-        match="invalid JSON",
+        ValueError,
+        match="cannot be empty",
     ):
-        VerifierAgent._validate_result(
-            "This is not JSON."
+        await agent.invoke(
+            "   "
         )
 
 
-def test_verifier_rejects_invalid_verdict():
-    raw = '''
-    {
-        "verdict": "MAYBE",
-        "issues": [],
-        "feedback": ""
-    }
-    '''
+@pytest.mark.asyncio
+async def test_verifier_agent_rejects_invalid_json():
+    agent = VerifierAgent(
+        verifier=FakeEvidenceAwareVerifier(
+            VerificationResult(
+                verdict="PASS",
+                issues=[],
+                feedback="",
+            )
+        )
+    )
 
     with pytest.raises(
-        RuntimeError,
-        match="PASS or FAIL",
+        ValueError,
+        match=(
+            "Invalid verification request"
+        ),
     ):
-        VerifierAgent._validate_result(raw)
+        await agent.invoke(
+            "not json"
+        )

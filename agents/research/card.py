@@ -21,7 +21,7 @@ research_skill = AgentSkill(
         "information-synthesis",
     ],
     input_modes=["text/plain"],
-    output_modes=["text/plain"],
+    output_modes=["application/json"],
     examples=[
         "Explain how transformer neural networks work.",
         "Research the advantages and disadvantages of RAG.",
@@ -38,7 +38,7 @@ research_agent_card = AgentCard(
     ),
     version="0.1.0",
     default_input_modes=["text/plain"],
-    default_output_modes=["text/plain"],
+    default_output_modes=["application/json"],
     capabilities=AgentCapabilities(
         streaming=True,
     ),

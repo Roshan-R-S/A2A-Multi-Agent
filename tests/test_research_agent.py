@@ -122,12 +122,34 @@ def test_research_agent_card_endpoint():
         "Research Agent"
     )
 
+    assert data["defaultInputModes"] == [
+        "text/plain"
+    ]
+
+    assert data["defaultOutputModes"] == [
+        "application/json"
+    ]
+
     skill_ids = {
         skill["id"]
         for skill in data["skills"]
     }
 
     assert "research_topic" in skill_ids
+
+    research_skill = next(
+        skill
+        for skill in data["skills"]
+        if skill["id"] == "research_topic"
+    )
+
+    assert research_skill["inputModes"] == [
+        "text/plain"
+    ]
+
+    assert research_skill["outputModes"] == [
+        "application/json"
+    ]
 
 
 @pytest.mark.asyncio

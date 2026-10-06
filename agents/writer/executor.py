@@ -1,4 +1,6 @@
-﻿from a2a.helpers import (
+﻿import json
+
+from a2a.helpers import (
     get_message_text,
     new_task_from_user_message,
     new_text_message,
@@ -18,17 +20,22 @@ from agents.writer.context import (
 from agents.writer.generator import (
     CitationAwareWriter,
 )
+from agents.writer.revision import (
+    parse_revision_request,
+)
 
 
 class WriterAgent:
     """
     Citation-aware Writer Agent.
 
-    Input:
-        Structured ResearchResult JSON
+    Supports:
 
-    Output:
-        User-facing prose with [src_n] citations.
+    1. Normal writing:
+       ResearchResult JSON -> final answer
+
+    2. Revision:
+       WriterRevisionRequest JSON -> revised answer
     """
 
     def __init__(
@@ -42,10 +49,45 @@ class WriterAgent:
 
     async def invoke(
         self,
-        research_payload: str,
+        payload: str,
     ) -> str:
+        payload = payload.strip()
+
+        if not payload:
+            raise ValueError(
+                "Writer request cannot be empty."
+            )
+
+        try:
+            data = json.loads(
+                payload
+            )
+
+        except json.JSONDecodeError:
+            # Preserve the existing structured
+            # research validation behaviour.
+            research = parse_research_result(
+                payload
+            )
+
+            return await self.writer.write(
+                research
+            )
+
+        if (
+            isinstance(data, dict)
+            and data.get("mode") == "revise"
+        ):
+            request = parse_revision_request(
+                payload
+            )
+
+            return await self.writer.revise(
+                request
+            )
+
         research = parse_research_result(
-            research_payload
+            payload
         )
 
         return await self.writer.write(
@@ -71,7 +113,6 @@ class WriterAgentExecutor(AgentExecutor):
 
         if context.current_task:
             task = context.current_task
-
         else:
             task = new_task_from_user_message(
                 context.message
@@ -90,8 +131,8 @@ class WriterAgentExecutor(AgentExecutor):
         await updater.update_status(
             state=TaskState.TASK_STATE_WORKING,
             message=new_text_message(
-                "Writer Agent is creating a "
-                "citation-backed response..."
+                "Writer Agent is creating or "
+                "revising a citation-backed response..."
             ),
         )
 
@@ -104,10 +145,9 @@ class WriterAgentExecutor(AgentExecutor):
             or not user_input.strip()
         ):
             result = (
-                "No structured research result "
+                "No structured writer request "
                 "was provided."
             )
-
         else:
             result = await self.agent.invoke(
                 user_input

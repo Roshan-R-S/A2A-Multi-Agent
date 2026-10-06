@@ -22,8 +22,12 @@ verifier_skill = AgentSkill(
         "consistency",
         "review",
     ],
-    input_modes=["text/plain"],
-    output_modes=["text/plain"],
+    input_modes=[
+        "application/json"
+    ],
+    output_modes=[
+        "application/json"
+    ],
     examples=[
         (
             "Verify whether this draft accurately reflects "
@@ -49,8 +53,12 @@ verifier_agent_card = AgentCard(
         "from the supplied research."
     ),
     version="0.1.0",
-    default_input_modes=["text/plain"],
-    default_output_modes=["text/plain"],
+    default_input_modes=[
+        "application/json"
+    ],
+    default_output_modes=[
+        "application/json"
+    ],
     capabilities=AgentCapabilities(
         streaming=True,
     ),
