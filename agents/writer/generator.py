@@ -1,8 +1,12 @@
+import logging
 import re
 
 from agents.research.schemas import ResearchResult
 from agents.writer.context import build_writer_context
 from core.llm import generate_text
+
+
+logger = logging.getLogger(__name__)
 
 
 WRITER_SYSTEM_PROMPT = """
@@ -20,9 +24,11 @@ Critical citation rules:
 - Preserve important uncertainty and caveats.
 - Every factual statement derived from the research must include
   one or more valid source citations.
-- Citations must use source IDs exactly like:
+- Citations MUST be literal ASCII square-bracket markers exactly like:
   [src_1]
   [src_2]
+- DO NOT substitute URLs, Markdown links, [1], (src_1), or
+  other citation formats for those markers.
 - Place citations directly after the factual statement they support.
 - Multiple sources may be cited like:
   [src_1] [src_2]
@@ -34,8 +40,24 @@ Critical citation rules:
 - Produce polished Markdown/plain-text prose suitable for the user.
 
 If supported claims and sources are provided, the final answer MUST
-contain source citations.
+contain source citations. Copy the citation IDs associated with each
+SUPPORTED CLAIM; do not simply place arbitrary source IDs on claims.
+If a sentence cannot be supported by supplied evidence, omit it.
+
+Required citation pattern (illustrative, not an extra fact to assert):
+  A sentence supported by a supplied claim. [src_1]
+  A second supported sentence. [src_2]
 """.strip()
+
+
+def _diagnostic_preview(text: str, limit: int = 300) -> str:
+    """Bounded local diagnostic. Never include the full prompt or API keys."""
+    safe = re.sub(
+        r"\b(?:gsk_|tvly-)[A-Za-z0-9_-]{12,}\b",
+        "[REDACTED_KEY]",
+        text,
+    )
+    return safe[:limit].replace("\n", "\\n").replace("\r", "")
 
 
 class CitationAwareWriter:
@@ -66,8 +88,10 @@ ALLOWED SOURCE CITATIONS:
 Write the final response now.
 
 Remember:
-Every factual statement must use one or more of the allowed
-source citations.
+Every factual sentence must end with the exact literal ASCII citation
+marker of its supporting claim, like [src_1]. The source marker is not
+optional. Do not use [1], numbered notes, URLs, or Markdown links as
+substitutes. Omit any sentence that cannot be supported.
 """.strip()
 
         first_result = await generate_text(
@@ -76,17 +100,25 @@ source citations.
             temperature=0.2,
         )
 
-        first_result = first_result.strip()
+        first_result = self.normalize_citation_markers(
+            first_result.strip()
+        )
 
         try:
             self._validate_response(
                 first_result,
                 research,
             )
-
             return first_result
 
         except RuntimeError as first_error:
+            logger.warning(
+                "Writer initial draft failed validation: %s; "
+                "recognized citations=%s; preview=%r",
+                first_error,
+                sorted(self.extract_citations(first_result)),
+                _diagnostic_preview(first_result),
+            )
             repair_prompt = f"""
 Your previous response failed citation validation.
 
@@ -96,7 +128,17 @@ VALIDATION ERROR:
 PREVIOUS RESPONSE:
 {first_result or "[empty response]"}
 
-Rewrite the answer using the structured research below.
+This is a targeted CITATION-FORMAT REPAIR. Your previous draft
+was rejected; do not repeat it with the same missing citations.
+Rewrite from SUPPORTED CLAIMS in the research below. Only make statements
+supported by those claims/evidence. Each factual sentence MUST end in
+one or more EXACT ASCII bracket markers such as [src_1], copied from
+the corresponding supported claim. This is required even for the intro.
+Do not replace [src_1] with [1], bare URLs, links, or footnotes.
+If a previous sentence cannot be cited from the research, DELETE it.
+If cited claims exist, returning a citation-free response is invalid.
+
+Use the structured research below:
 
 ALLOWED SOURCE CITATIONS:
 {allowed_sources}
@@ -121,7 +163,7 @@ Mandatory requirements:
                 temperature=0.0,
             )
 
-            repaired_result = (
+            repaired_result = self.normalize_citation_markers(
                 repaired_result.strip()
             )
 
@@ -130,8 +172,14 @@ Mandatory requirements:
                     repaired_result,
                     research,
                 )
-
             except RuntimeError as second_error:
+                logger.error(
+                    "Writer citation repair failed: %s; "
+                    "recognized citations=%s; preview=%r",
+                    second_error,
+                    sorted(self.extract_citations(repaired_result)),
+                    _diagnostic_preview(repaired_result),
+                )
                 raise RuntimeError(
                     "Writer failed citation validation "
                     "after one repair attempt: "
@@ -144,35 +192,27 @@ Mandatory requirements:
         self,
         request,
     ) -> str:
-        from agents.writer.revision import (
-            build_revision_context,
-        )
+        """Revise a draft from Verifier feedback, preserving citation rules."""
+        from agents.writer.revision import build_revision_context
 
-        context = build_revision_context(
-            request
-        )
-
+        context = build_revision_context(request)
         allowed_sources = " ".join(
             f"[{source.id}]"
-            for source
-            in request.research.sources
+            for source in request.research.sources
         )
 
         prompt = f"""
 Revise the existing answer using the verifier feedback.
 
 You must correct every verifier issue.
+Use ONLY the supplied research; do not introduce outside facts.
+Preserve accurate content and important research caveats.
 
-Use ONLY the supplied research.
-
-Do not introduce outside facts.
-
-Preserve accurate content from the existing draft.
-
-Preserve important research caveats.
-
-Every factual statement must use appropriate source
-citations.
+Every factual statement must have an appropriate citation, written
+with literal ASCII square brackets such as [src_1]. Do not substitute
+numbered footnotes, bare URLs, or Markdown links for these markers.
+Copy the supporting source ID from the relevant research claim.
+Omit statements that cannot be supported by the supplied research.
 
 ALLOWED SOURCE CITATIONS:
 {allowed_sources}
@@ -188,12 +228,19 @@ Return only the corrected final answer.
             temperature=0.0,
         )
 
-        result = result.strip()
+        result = self.normalize_citation_markers(result.strip())
 
-        self._validate_response(
-            result,
-            request.research,
-        )
+        try:
+            self._validate_response(result, request.research)
+        except RuntimeError as exc:
+            logger.warning(
+                "Writer revision failed citation validation: %s; "
+                "recognized citations=%s; preview=%r",
+                exc,
+                sorted(self.extract_citations(result)),
+                _diagnostic_preview(result),
+            )
+            raise
 
         return result
 
@@ -214,15 +261,27 @@ Return only the corrected final answer.
         )
 
     @staticmethod
+    def normalize_citation_markers(text: str) -> str:
+        """Normalize only recognizable source-ID brackets, never guess sources."""
+        return re.sub(
+            r"\[\s*(src_\d+)\s*\]",
+            lambda m: f"[{m.group(1).lower()}]",
+            text,
+            flags=re.IGNORECASE,
+        )
+
+    @staticmethod
     def extract_citations(
         text: str,
     ) -> set[str]:
-        return set(
-            re.findall(
-                r"\[(src_\d+)\]",
+        return {
+            source_id.lower()
+            for source_id in re.findall(
+                r"\[\s*(src_\d+)\s*\]",
                 text,
+                flags=re.IGNORECASE,
             )
-        )
+        }
 
     @classmethod
     def validate_citations(
@@ -239,10 +298,7 @@ Return only the corrected final answer.
             for source in research.sources
         }
 
-        unknown = (
-            citations
-            - known_sources
-        )
+        unknown = citations - known_sources
 
         if unknown:
             unknown_list = ", ".join(

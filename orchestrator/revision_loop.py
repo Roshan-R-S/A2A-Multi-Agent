@@ -18,6 +18,14 @@ from agents.writer.revision import (
 logger = logging.getLogger(__name__)
 
 
+def _log_safe_excerpt(text: str, limit: int = 280) -> str:
+    """Keep diagnostic text readable as one bounded log line."""
+    excerpt = " ".join(str(text).split())
+    if len(excerpt) > limit:
+        return excerpt[: limit - 3] + "..."
+    return excerpt
+
+
 class RevisionLoop:
     """
     Runs:
@@ -108,6 +116,37 @@ class RevisionLoop:
                 )
 
                 return current_draft
+
+            # Each failure now exposes its actual reasons, not just
+            # the overall FAIL verdict. Only bounded excerpts are
+            # printed; the entire draft/research is not logged.
+            logger.info(
+                "Verification attempt %d rejected draft: "
+                "%d issue(s); overall feedback: %s",
+                attempt_number,
+                len(verification.issues),
+                _log_safe_excerpt(
+                    verification.feedback or "(none)"
+                ),
+            )
+
+            for issue_number, issue in enumerate(
+                verification.issues,
+                start=1,
+            ):
+                logger.info(
+                    "Verification attempt %d, issue %d: "
+                    "type=%s | statement=%s | "
+                    "source_ids=%s | feedback=%s",
+                    attempt_number,
+                    issue_number,
+                    issue.type,
+                    _log_safe_excerpt(
+                        issue.statement or "(not provided)"
+                    ),
+                    ", ".join(issue.source_ids) or "(none)",
+                    _log_safe_excerpt(issue.feedback),
+                )
 
             if (
                 revision_number

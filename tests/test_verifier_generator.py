@@ -331,6 +331,135 @@ async def test_missing_citation_fails_without_llm(
 
 
 @pytest.mark.asyncio
+async def test_uncited_research_sentence_fails_without_llm(
+    monkeypatch,
+):
+    async def fake_generate_text(
+        *args,
+        **kwargs,
+    ):
+        raise AssertionError(
+            "LLM should not be called."
+        )
+
+    monkeypatch.setattr(
+        generator_module,
+        "generate_text",
+        fake_generate_text,
+    )
+
+    verifier = EvidenceAwareVerifier()
+
+    result = await verifier.verify(
+        make_request(
+            (
+                "RAG uses retrieved information "
+                "during generation. [src_1]\n"
+                "Retrieval quality matters."
+            )
+        )
+    )
+
+    assert result.verdict == "FAIL"
+
+    assert any(
+        (
+            issue.type
+            == "missing_citation"
+            and issue.statement
+            == "Retrieval quality matters."
+        )
+        for issue
+        in result.issues
+    )
+
+
+@pytest.mark.asyncio
+async def test_fully_cited_sentences_reach_semantic_verifier(
+    monkeypatch,
+):
+    captured = {}
+
+    async def fake_generate_text(
+        prompt: str,
+        system_prompt: str,
+        temperature: float,
+    ) -> str:
+        captured["prompt"] = prompt
+
+        return """
+        {
+            "verdict": "PASS",
+            "issues": [],
+            "feedback": ""
+        }
+        """
+
+    monkeypatch.setattr(
+        generator_module,
+        "generate_text",
+        fake_generate_text,
+    )
+
+    verifier = EvidenceAwareVerifier()
+
+    result = await verifier.verify(
+        make_request(
+            (
+                "RAG uses retrieved information "
+                "during generation. [src_1]\n"
+                "Retrieval quality matters. [src_1]"
+            )
+        )
+    )
+
+    assert result.verdict == "PASS"
+
+    assert (
+        "WRITER DRAFT"
+        in captured["prompt"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_markdown_heading_is_not_missing_citation(
+    monkeypatch,
+):
+    async def fake_generate_text(
+        prompt: str,
+        system_prompt: str,
+        temperature: float,
+    ) -> str:
+        return """
+        {
+            "verdict": "PASS",
+            "issues": [],
+            "feedback": ""
+        }
+        """
+
+    monkeypatch.setattr(
+        generator_module,
+        "generate_text",
+        fake_generate_text,
+    )
+
+    verifier = EvidenceAwareVerifier()
+
+    result = await verifier.verify(
+        make_request(
+            (
+                "### How RAG works\n"
+                "RAG uses retrieved information "
+                "during generation. [src_1]"
+            )
+        )
+    )
+
+    assert result.verdict == "PASS"
+
+
+@pytest.mark.asyncio
 async def test_semantic_verifier_calls_llm(
     monkeypatch,
 ):

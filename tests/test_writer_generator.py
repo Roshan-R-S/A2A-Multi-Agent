@@ -325,3 +325,80 @@ async def test_writer_repairs_missing_citations(
         "failed citation validation"
         in calls[1]["prompt"]
     )
+
+
+def test_extract_citations_accepts_whitespace_and_case():
+    assert CitationAwareWriter.extract_citations(
+        "one [ SRC_1 ] two [src_2]"
+    ) == {"src_1", "src_2"}
+
+
+def test_normalize_citation_markers_keeps_unsupported_unchanged():
+    text = "Known [ SRC_1 ] and unrelated [abc_2]"
+    assert CitationAwareWriter.normalize_citation_markers(text) == (
+        "Known [src_1] and unrelated [abc_2]"
+    )
+
+
+@pytest.mark.asyncio
+async def test_writer_normalizes_recognizable_citation_format(monkeypatch):
+    async def fake_generate_text(prompt, system_prompt, temperature):
+        return "RAG uses retrieved information. [ SRC_1 ]"
+
+    monkeypatch.setattr(generator_module, "generate_text", fake_generate_text)
+    result = await CitationAwareWriter().write(make_research_result())
+    assert result == "RAG uses retrieved information. [src_1]"
+
+
+@pytest.mark.asyncio
+async def test_writer_repair_logs_draft_and_shows_citation_format(monkeypatch, caplog):
+    responses = [
+        "RAG combines retrieval with generation.",
+        "RAG combines retrieval with generation. [src_1]",
+    ]
+    prompts = []
+
+    async def fake_generate_text(prompt, system_prompt, temperature):
+        prompts.append(prompt)
+        return responses[len(prompts) - 1]
+
+    monkeypatch.setattr(generator_module, "generate_text", fake_generate_text)
+    with caplog.at_level("WARNING", logger=generator_module.__name__):
+        result = await CitationAwareWriter().write(make_research_result())
+    assert "[src_1]" in result
+    assert "targeted CITATION-FORMAT REPAIR" in prompts[1]
+    assert "[src_1]" in prompts[1]
+    assert "Writer initial draft failed validation" in caplog.text
+    assert "preview=" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_writer_failed_repair_logs_both_attempts(monkeypatch, caplog):
+    async def fake_generate_text(prompt, system_prompt, temperature):
+        return "RAG retrieves information before generation."
+
+    monkeypatch.setattr(generator_module, "generate_text", fake_generate_text)
+    with caplog.at_level("WARNING", logger=generator_module.__name__):
+        with pytest.raises(RuntimeError, match="after one repair attempt"):
+            await CitationAwareWriter().write(make_research_result())
+    assert "Writer initial draft failed validation" in caplog.text
+    assert "Writer citation repair failed" in caplog.text
+    assert "recognized citations=[]" in caplog.text
+
+@pytest.mark.asyncio
+async def test_writer_normalizes_citation_in_repaired_draft(monkeypatch):
+    responses = [
+        "RAG combines retrieval with generation.",
+        "RAG combines retrieval with generation. [ SRC_1 ]",
+    ]
+    calls = 0
+
+    async def fake_generate_text(prompt, system_prompt, temperature):
+        nonlocal calls
+        calls += 1
+        return responses[calls - 1]
+
+    monkeypatch.setattr(generator_module, "generate_text", fake_generate_text)
+    result = await CitationAwareWriter().write(make_research_result())
+    assert calls == 2
+    assert result.endswith("[src_1]")

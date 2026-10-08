@@ -1,4 +1,5 @@
 import json
+import re
 
 from agents.verifier.context import (
     build_verifier_context,
@@ -90,6 +91,175 @@ Rules:
 """.strip()
 
 
+_CITATION_RE = re.compile(r"\[src_\d+\]", re.IGNORECASE)
+# Include source markers immediately following terminal punctuation in the
+# preceding statement: "Fact. [src_1]" is ONE cited statement.
+_SENTENCE_END_RE = re.compile(
+    r"(?<=[.!?])(?:\s*\[src_\d+\])*(?=\s|$)",
+    re.IGNORECASE,
+)
+_WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+
+_STOP_WORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "can",
+    "for", "from", "has", "have", "in", "into", "is", "it",
+    "its", "of", "on", "or", "that", "the", "their", "this",
+    "to", "was", "were", "will", "with",
+}
+
+
+def _meaningful_words(text: str) -> set[str]:
+    return {
+        word.lower()
+        for word in _WORD_RE.findall(text)
+        if (
+            len(word) > 2
+            and word.lower() not in _STOP_WORDS
+            and not word.lower().startswith("src_")
+        )
+    }
+
+
+def _iter_candidate_statements(
+    draft: str,
+) -> list[str]:
+    statements: list[str] = []
+    in_code_block = False
+
+    for raw_line in draft.splitlines():
+        line = raw_line.strip()
+
+        if not line:
+            continue
+
+        if line.startswith("```"):
+            in_code_block = not in_code_block
+            continue
+
+        if in_code_block:
+            continue
+
+        if (
+            line.startswith("#")
+            or line.startswith("|")
+            or set(line) <= {"-", "|", ":", " "}
+        ):
+            continue
+
+        line = re.sub(
+            r"^(?:[-*+]\s+|\d+[.)]\s+)",
+            "",
+            line,
+        ).strip()
+
+        if not line:
+            continue
+
+        if (
+            line.endswith(":")
+            and len(_meaningful_words(line)) <= 8
+        ):
+            continue
+
+        start = 0
+        for end in _SENTENCE_END_RE.finditer(line):
+            statement = line[start:end.end()].strip()
+            if statement:
+                statements.append(statement)
+            start = end.end()
+
+        # Keep unfinished final text for semantic checking too.
+        remainder = line[start:].strip()
+        if remainder:
+            statements.append(remainder)
+
+    return statements
+
+
+def _research_reference_texts(
+    request: VerificationRequest,
+) -> list[str]:
+    research = request.research
+
+    texts = [
+        research.summary,
+        *[claim.text for claim in research.claims],
+        *[evidence.text for evidence in research.evidence],
+        *research.caveats,
+    ]
+
+    return [
+        text.strip()
+        for text in texts
+        if text and text.strip()
+    ]
+
+
+def _looks_research_backed(
+    statement: str,
+    reference_texts: list[str],
+) -> bool:
+    statement_words = _meaningful_words(
+        _CITATION_RE.sub("", statement)
+    )
+
+    if len(statement_words) < 2:
+        return False
+
+    for reference in reference_texts:
+        reference_words = _meaningful_words(reference)
+
+        if len(reference_words) < 2:
+            continue
+
+        overlap = statement_words & reference_words
+
+        if len(overlap) < 2:
+            continue
+
+        statement_ratio = (
+            len(overlap) / len(statement_words)
+        )
+        reference_ratio = (
+            len(overlap) / len(reference_words)
+        )
+
+        if max(
+            statement_ratio,
+            reference_ratio,
+        ) >= 0.5:
+            return True
+
+    return False
+
+
+def _find_uncited_research_statements(
+    request: VerificationRequest,
+) -> list[str]:
+    reference_texts = _research_reference_texts(
+        request
+    )
+
+    uncited: list[str] = []
+
+    for statement in _iter_candidate_statements(
+        request.draft
+    ):
+        if _CITATION_RE.search(statement):
+            continue
+
+        if statement.endswith("?"):
+            continue
+
+        if _looks_research_backed(
+            statement,
+            reference_texts,
+        ):
+            uncited.append(statement)
+
+    return uncited
+
+
 class EvidenceAwareVerifier:
     name = "evidence-aware-verifier"
 
@@ -142,17 +312,14 @@ class EvidenceAwareVerifier:
                 VerificationIssue(
                     type="unknown_citation",
                     statement="",
-                    source_ids=[
-                        source_id
-                    ],
+                    source_ids=[source_id],
                     feedback=(
                         f"The draft references "
                         f"unknown source "
                         f"[{source_id}]."
                     ),
                 )
-                for source_id
-                in sorted(unknown)
+                for source_id in sorted(unknown)
             ]
 
             return VerificationResult(
@@ -195,6 +362,43 @@ class EvidenceAwareVerifier:
                 ),
             )
 
+        if (
+            request.research.claims
+            and request.research.sources
+        ):
+            uncited_statements = (
+                _find_uncited_research_statements(
+                    request
+                )
+            )
+
+            if uncited_statements:
+                issues = [
+                    VerificationIssue(
+                        type="missing_citation",
+                        statement=statement,
+                        source_ids=[],
+                        feedback=(
+                            "This research-backed "
+                            "factual statement needs "
+                            "an appropriate source "
+                            "citation."
+                        ),
+                    )
+                    for statement
+                    in uncited_statements
+                ]
+
+                return VerificationResult(
+                    verdict="FAIL",
+                    issues=issues,
+                    feedback=(
+                        "Add source citations to "
+                        "each research-backed factual "
+                        "statement identified above."
+                    ),
+                )
+
         return None
 
     @staticmethod
@@ -220,9 +424,7 @@ class EvidenceAwareVerifier:
             text = text[:-3].strip()
 
         try:
-            data = json.loads(
-                text
-            )
+            data = json.loads(text)
 
         except json.JSONDecodeError as exc:
             raise RuntimeError(
@@ -232,9 +434,7 @@ class EvidenceAwareVerifier:
         try:
             result = (
                 VerificationResult
-                .model_validate(
-                    data
-                )
+                .model_validate(data)
             )
 
         except Exception as exc:
@@ -269,9 +469,7 @@ class EvidenceAwareVerifier:
 
             if unknown_sources:
                 unknown_list = ", ".join(
-                    sorted(
-                        unknown_sources
-                    )
+                    sorted(unknown_sources)
                 )
 
                 raise RuntimeError(
