@@ -9,6 +9,23 @@ from knowledge.db import connect
 _CONVERSATION_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _ROLES = {"user", "assistant"}
 _MAX_CONTENT = 20000
+_MAX_TITLE = 80
+
+
+def _clean_title(value: str, *, truncate: bool = False) -> str:
+    """Only user-provided text. No external title-generation requests."""
+    if not isinstance(value, str):
+        raise ValueError("Conversation title must be text.")
+    clean = " ".join(value.split())
+    if not clean:
+        if truncate:
+            return "Untitled conversation"
+        raise ValueError("Conversation title cannot be empty.")
+    if len(clean) > _MAX_TITLE:
+        if not truncate:
+            raise ValueError("Conversation title must be 80 characters or less.")
+        clean = clean[:_MAX_TITLE].rstrip()
+    return clean
 
 
 @dataclass(frozen=True)
@@ -37,7 +54,8 @@ class ConversationMemory:
         with connect(self.db_path) as con:
             con.executescript("""
                 CREATE TABLE IF NOT EXISTS memory_conversations (
-                    id TEXT PRIMARY KEY
+                    id TEXT PRIMARY KEY,
+                    title TEXT
                 );
                 CREATE TABLE IF NOT EXISTS memory_messages (
                     id INTEGER PRIMARY KEY,
@@ -51,6 +69,38 @@ class ConversationMemory:
                 CREATE INDEX IF NOT EXISTS memory_messages_by_conversation
                     ON memory_messages(conversation_id, id);
             """)
+            # Upgrade existing databases without losing any saved conversations.
+            columns = {row["name"] for row in con.execute(
+                "PRAGMA table_info(memory_conversations)"
+            )}
+            if "title" not in columns:
+                con.execute("ALTER TABLE memory_conversations ADD COLUMN title TEXT")
+            missing = con.execute("""
+                SELECT c.id, (
+                    SELECT m.content FROM memory_messages AS m
+                    WHERE m.conversation_id=c.id AND m.role='user'
+                    ORDER BY m.id LIMIT 1
+                ) AS first_question
+                FROM memory_conversations AS c
+                WHERE c.title IS NULL OR c.title=''
+            """).fetchall()
+            for row in missing:
+                if row["first_question"] is None:
+                    continue
+                con.execute(
+                    "UPDATE memory_conversations SET title=? WHERE id=?",
+                    (_clean_title(row["first_question"] or "", truncate=True), row["id"]),
+                )
+
+    def rename_conversation(self, conversation_id: str, title: str) -> bool:
+        _validate_conversation_id(conversation_id)
+        name = _clean_title(title)
+        with connect(self.db_path) as con:
+            result = con.execute(
+                "UPDATE memory_conversations SET title=? WHERE id=?",
+                (name, conversation_id),
+            )
+            return result.rowcount > 0
 
     def add_message(self, conversation_id: str, role: str, content: str) -> None:
         _validate_conversation_id(conversation_id)
@@ -64,6 +114,12 @@ class ConversationMemory:
                 "INSERT INTO memory_messages(conversation_id,role,content) "
                 "VALUES (?,?,?)", (conversation_id, role, content),
             )
+            if role == "user":
+                con.execute(
+                    "UPDATE memory_conversations SET title=? "
+                    "WHERE id=? AND title IS NULL",
+                    (_clean_title(content, truncate=True), conversation_id),
+                )
 
     def add_exchange(self, conversation_id: str, question: str, answer: str) -> None:
         _validate_conversation_id(conversation_id)
@@ -79,6 +135,11 @@ class ConversationMemory:
                 "VALUES (?,?,?)",
                 [(conversation_id, "user", question),
                  (conversation_id, "assistant", answer)],
+            )
+            con.execute(
+                "UPDATE memory_conversations SET title=? "
+                "WHERE id=? AND title IS NULL",
+                (_clean_title(question, truncate=True), conversation_id),
             )
 
     def history(self, conversation_id: str, limit: int = 50) -> list[MemoryMessage]:

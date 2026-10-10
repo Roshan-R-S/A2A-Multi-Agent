@@ -67,7 +67,7 @@ export function KnowledgeWorkspace({ documents, refresh, onAsk }: {
   }
 
   return <section className="content-screen knowledge-workspace" aria-label="Knowledge base">
-    <div className="section-intro"><p className="eyebrow">02 / YOUR KNOWLEDGE</p><h1>Knowledge base<span className="count-suffix"> / {String(documents.length).padStart(2,'0')}</span></h1>
+    <div className="section-intro"><p className="eyebrow">YOUR KNOWLEDGE</p><h1>Knowledge base<span className="count-suffix"> · {documents.length} files</span></h1>
       <p>Index the files you choose. Local keyword retrieval requires no cloud service.</p>
     </div>
     <div className="knowledge-head">
@@ -78,8 +78,8 @@ export function KnowledgeWorkspace({ documents, refresh, onAsk }: {
     {error && <div className="inline-error" role="alert"><span>[ERROR] {error}</span><button aria-label="Dismiss error" onClick={()=>setError('')}><X size={16}/></button></div>}
     {notice && <p className="inline-notice" role="status">[DONE] {notice}</p>}
     <div className="document-list">
-      {documents.length ? documents.map((doc, index) => <div className="document-row" key={doc.id}>
-        <span className="document-index">{String(index + 1).padStart(2, '0')}</span><FileText size={18} aria-hidden="true"/>
+      {documents.length ? documents.map(doc => <div className="document-row" key={doc.id}>
+        <FileText size={18} aria-hidden="true"/>
         <div className="document-info"><strong>{doc.title}</strong><span>DOCUMENT {doc.id} / {doc.chunks} CHUNKS</span></div>
         <button className="action-button summary-action" type="button" disabled={summarizingId !== null}
           aria-label={`Summarize ${doc.title}`} onClick={()=>void summarize(doc)}>

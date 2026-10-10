@@ -1,9 +1,9 @@
-import { BookOpen, Cpu, History, MessageSquare, Plus, Trash2 } from 'lucide-react'
+import { BookOpen, Cpu, History, MessageSquare, Plus, Pencil, Trash2 } from 'lucide-react'
 import type { Conversation } from '../../api'
 import type { Page } from './WorkspaceHeader'
 import { Brand } from '../ui/Brand'
 
-export function Sidebar({ page, changePage, conversations, currentId, newChat, switchChat, deleteChat, disabled, online }: {
+export function Sidebar({ page, changePage, conversations, currentId, newChat, switchChat, deleteChat, renameChat, disabled, online }: {
   page: Page
   changePage: (page: Page) => void
   conversations: Conversation[]
@@ -11,6 +11,7 @@ export function Sidebar({ page, changePage, conversations, currentId, newChat, s
   newChat: () => void
   switchChat: (id: string) => void
   deleteChat: (item: Conversation) => void
+  renameChat: (item: Conversation) => void
   disabled: boolean
   online: boolean
 }) {
@@ -18,7 +19,7 @@ export function Sidebar({ page, changePage, conversations, currentId, newChat, s
     <div className="sidebar-brand"><Brand/><span className="eyebrow">LOCAL ASSISTANT / V0.4</span></div>
     <button className="action-button new-conversation" onClick={newChat} disabled={disabled}><Plus size={17} aria-hidden="true"/> NEW CONVERSATION</button>
     <div className="sidebar-group">
-      <p className="eyebrow nav-label">01 / NAVIGATION</p>
+      <p className="eyebrow nav-label">NAVIGATION</p>
       <nav className="primary-nav" aria-label="Primary">
         <button className={page === 'chat' ? 'selected' : ''} onClick={() => changePage('chat')} aria-current={page === 'chat' ? 'page' : undefined}><MessageSquare size={18}/> CHAT</button>
         <button className={page === 'knowledge' ? 'selected' : ''} onClick={() => changePage('knowledge')} aria-current={page === 'knowledge' ? 'page' : undefined}><BookOpen size={18}/> KNOWLEDGE</button>
@@ -27,18 +28,19 @@ export function Sidebar({ page, changePage, conversations, currentId, newChat, s
       </nav>
     </div>
     <div className="sidebar-group conversations">
-      <p className="eyebrow nav-label">02 / SAVED SESSIONS <span className="mono-number">{String(conversations.length).padStart(2,'0')}</span></p>
+      <p className="eyebrow nav-label">CONVERSATIONS <span className="chat-count">{conversations.length} CHATS</span></p>
       <div className="session-list">
         {conversations.length === 0 && <p className="minor-text">No saved conversations yet. Enable SAVE HISTORY in chat.</p>}
-        {conversations.map((c, index) => <div className={`session-item ${c.id === currentId ? 'active' : ''}`} key={c.id}>
-          <button className="session-select" onClick={() => switchChat(c.id)} disabled={disabled} title={c.id}>
-            <span className="session-number">{String(index+1).padStart(2,'0')}</span>
-            <span className="session-name">{c.id.replace(/^chat_/, 'Session ').slice(0, 26)}</span>
+        {conversations.map(c => <div className={`session-item ${c.id === currentId ? 'active' : ''}`} key={c.id}>
+          <button className="session-select" onClick={() => switchChat(c.id)} disabled={disabled} title={c.title}>
+            <MessageSquare size={15} aria-hidden="true"/>
+            <span className="session-name">{c.title}</span>
           </button>
-          <button className="icon-button session-remove" onClick={() => deleteChat(c)} aria-label={`Delete conversation ${c.id}`} title="Delete saved conversation" disabled={disabled}><Trash2 size={16}/></button>
+          <button className="icon-button session-rename" onClick={() => renameChat(c)} aria-label={`Rename conversation ${c.title}`} title="Rename conversation" disabled={disabled}><Pencil size={14}/></button>
+          <button className="icon-button session-remove" onClick={() => deleteChat(c)} aria-label={`Delete conversation ${c.title}`} title="Delete saved conversation" disabled={disabled}><Trash2 size={16}/></button>
         </div>)}
       </div>
     </div>
-    <div className="sidebar-foot"><span className={`signal ${online ? 'positive' : 'negative'}`} /><span>LOCAL API {online ? 'CONNECTED' : 'UNAVAILABLE'}</span><span className="mono-number">/ 001</span></div>
+    <div className="sidebar-foot"><span className={`signal ${online ? 'positive' : 'negative'}`} /><span>LOCAL API {online ? 'CONNECTED' : 'UNAVAILABLE'}</span></div>
   </aside>
 }
