@@ -139,6 +139,27 @@ def _iter_candidate_statements(
         if in_code_block:
             continue
 
+        # A short, standalone bold label without a factual predicate
+        # is a Markdown heading, not a research-backed assertion.
+        emphasized = re.fullmatch(
+            r"(?:\*\*|__)(.+?)(?:\*\*|__)",
+            line,
+        )
+        if emphasized:
+            title = emphasized.group(1).strip()
+            if (
+                len(title.split()) <= 14
+                and not title.endswith((".", "!", "?"))
+                and not re.search(
+                    r"\b(?:is|are|was|were|can|has|have|uses|"
+                    r"requires|provides|retrieves|improves|"
+                    r"reduces|supports|depends|adds|combines|changes)\b",
+                    title,
+                    re.IGNORECASE,
+                )
+            ):
+                continue
+
         if (
             line.startswith("#")
             or line.startswith("|")
@@ -163,6 +184,14 @@ def _iter_candidate_statements(
 
         start = 0
         for end in _SENTENCE_END_RE.finditer(line):
+            # Abbreviations like "vs." and "e.g." must not split a sentence.
+            if re.search(
+                r"\b(?:vs|etc|e\.g|i\.e|Mr|Mrs|Dr)\.$",
+                line[:end.start()].rstrip(),
+                re.IGNORECASE,
+            ):
+                continue
+
             statement = line[start:end.end()].strip()
             if statement:
                 statements.append(statement)

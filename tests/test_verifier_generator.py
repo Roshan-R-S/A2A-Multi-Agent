@@ -331,6 +331,107 @@ async def test_missing_citation_fails_without_llm(
 
 
 @pytest.mark.asyncio
+async def test_semantic_verifier_calls_llm(
+    monkeypatch,
+):
+    captured = {}
+
+    async def fake_generate_text(
+        prompt: str,
+        system_prompt: str,
+        temperature: float,
+    ) -> str:
+
+        captured["prompt"] = prompt
+        captured["temperature"] = (
+            temperature
+        )
+
+        return """
+        {
+            "verdict": "PASS",
+            "issues": [],
+            "feedback": ""
+        }
+        """
+
+    monkeypatch.setattr(
+        generator_module,
+        "generate_text",
+        fake_generate_text,
+    )
+
+    verifier = EvidenceAwareVerifier()
+
+    result = await verifier.verify(
+        make_request()
+    )
+
+    assert result.verdict == "PASS"
+
+    assert (
+        "SUPPORTED CLAIMS AND EVIDENCE"
+        in captured["prompt"]
+    )
+
+    assert (
+        "WRITER DRAFT"
+        in captured["prompt"]
+    )
+
+    assert (
+        "evidence_1"
+        in captured["prompt"]
+    )
+
+    assert (
+        captured["temperature"]
+        == 0.0
+    )
+
+
+# Regression tests for bold headings and abbreviated sentence boundaries.
+
+def test_emphasized_vs_heading_is_not_a_claim():
+    draft = (
+        "**Retrieval‑augmented generation (RAG) vs. fine‑tuning**\n"
+        "RAG uses retrieved information during generation. [src_1]"
+    )
+    assert generator_module._find_uncited_research_statements(
+        make_request(draft)
+    ) == []
+
+
+def test_vs_abbreviation_does_not_split_a_sentence():
+    draft = (
+        "RAG vs. fine-tuning uses retrieved information "
+        "during generation. [src_1]"
+    )
+    assert generator_module._iter_candidate_statements(draft) == [
+        draft
+    ]
+
+
+def test_uncited_factual_statement_after_heading_is_detected():
+    draft = (
+        "**RAG vs. fine-tuning**\n"
+        "RAG uses retrieved information during generation."
+    )
+    assert generator_module._find_uncited_research_statements(
+        make_request(draft)
+    ) == [
+        "RAG uses retrieved information during generation."
+    ]
+
+
+def test_bold_factual_statement_is_not_automatically_exempt():
+    draft = "**RAG uses retrieved information during generation**"
+    assert generator_module._find_uncited_research_statements(
+        make_request(draft)
+    ) == [draft]
+
+
+@pytest.mark.asyncio
 async def test_uncited_research_sentence_fails_without_llm(
     monkeypatch,
 ):
@@ -457,63 +558,3 @@ async def test_markdown_heading_is_not_missing_citation(
     )
 
     assert result.verdict == "PASS"
-
-
-@pytest.mark.asyncio
-async def test_semantic_verifier_calls_llm(
-    monkeypatch,
-):
-    captured = {}
-
-    async def fake_generate_text(
-        prompt: str,
-        system_prompt: str,
-        temperature: float,
-    ) -> str:
-
-        captured["prompt"] = prompt
-        captured["temperature"] = (
-            temperature
-        )
-
-        return """
-        {
-            "verdict": "PASS",
-            "issues": [],
-            "feedback": ""
-        }
-        """
-
-    monkeypatch.setattr(
-        generator_module,
-        "generate_text",
-        fake_generate_text,
-    )
-
-    verifier = EvidenceAwareVerifier()
-
-    result = await verifier.verify(
-        make_request()
-    )
-
-    assert result.verdict == "PASS"
-
-    assert (
-        "SUPPORTED CLAIMS AND EVIDENCE"
-        in captured["prompt"]
-    )
-
-    assert (
-        "WRITER DRAFT"
-        in captured["prompt"]
-    )
-
-    assert (
-        "evidence_1"
-        in captured["prompt"]
-    )
-
-    assert (
-        captured["temperature"]
-        == 0.0
-    )
