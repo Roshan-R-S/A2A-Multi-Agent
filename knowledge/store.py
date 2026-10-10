@@ -30,6 +30,28 @@ class IndexedDocument:
     unchanged: bool
 
 
+class SummaryLimitError(ValueError):
+    """Indexed document exceeds the safe full-summary processing limit."""
+
+
+# Lower than the ingestion limit on purpose: large uploads can still be searched.
+MAX_SUMMARY_CHARACTERS = 48_000
+MAX_SUMMARY_CHUNKS = 80
+
+
+@dataclass(frozen=True)
+class SummaryChunk:
+    position: int
+    body: str
+
+
+@dataclass(frozen=True)
+class SummaryDocument:
+    document_id: int
+    title: str
+    chunks: tuple[SummaryChunk, ...]
+
+
 @dataclass(frozen=True)
 class SearchHit:
     document_id: int
@@ -196,6 +218,37 @@ class KnowledgeStore:
             ).fetchall()
         return [IndexedDocument(r["id"], r["title"], r["chunks"], False)
                 for r in rows]
+
+    def read_document_for_summary(self, document_id: int) -> SummaryDocument | None:
+        """Return every indexed chunk in order, or reject excessive input.
+
+        Uses indexed content only; never reads arbitrary paths from the DB.
+        """
+        if document_id <= 0:
+            return None
+        with connect(self.db_path) as con:
+            row = con.execute(
+                """SELECT d.id, d.title, COUNT(c.id) AS chunks,
+                          COALESCE(SUM(LENGTH(c.body)), 0) AS characters
+                   FROM knowledge_documents d
+                   LEFT JOIN knowledge_chunks c ON c.document_id=d.id
+                   WHERE d.id=? GROUP BY d.id""", (document_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            if row["chunks"] > MAX_SUMMARY_CHUNKS or row["characters"] > MAX_SUMMARY_CHARACTERS:
+                raise SummaryLimitError(
+                    "Document is too large for full summarization (limit: "
+                    f"{MAX_SUMMARY_CHARACTERS} indexed characters and "
+                    f"{MAX_SUMMARY_CHUNKS} chunks). Search remains available."
+                )
+            chunks = con.execute(
+                """SELECT position, body FROM knowledge_chunks
+                   WHERE document_id=? ORDER BY position ASC""", (document_id,)
+            ).fetchall()
+        return SummaryDocument(document_id, row["title"], tuple(
+            SummaryChunk(chunk["position"], chunk["body"]) for chunk in chunks
+        ))
 
     def delete_document(self, document_id: int) -> bool:
         with connect(self.db_path) as con:

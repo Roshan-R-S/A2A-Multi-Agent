@@ -1,4 +1,4 @@
-﻿"""Offline tests for Groq retry handling."""
+"""Offline tests of the shared Groq retry policy (zero API tokens)."""
 
 import logging
 from types import SimpleNamespace
@@ -16,32 +16,14 @@ def _status_error(
     retry_after: str | None = None,
     message: str = "temporary failure",
 ) -> APIStatusError:
-    request = httpx.Request(
-        "POST",
-        "https://api.groq.com/openai/v1/chat/completions",
-    )
-
+    request = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
     response = httpx.Response(
         status,
         request=request,
-        headers=(
-            {"retry-after": retry_after}
-            if retry_after
-            else {}
-        ),
+        headers={"retry-after": retry_after} if retry_after else {},
     )
-
-    cls = (
-        RateLimitError
-        if status == 429
-        else APIStatusError
-    )
-
-    return cls(
-        message,
-        response=response,
-        body=None,
-    )
+    cls = RateLimitError if status == 429 else APIStatusError
+    return cls(message, response=response, body=None)
 
 
 def _fake_client(monkeypatch, scripted):
@@ -51,34 +33,16 @@ def _fake_client(monkeypatch, scripted):
     async def create(**kwargs):
         calls.append(kwargs)
         result = next(scripted)
-
         if isinstance(result, Exception):
             raise result
-
         return SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(
-                        content=result
-                    )
-                )
-            ]
+            choices=[SimpleNamespace(message=SimpleNamespace(content=result))]
         )
 
     fake = SimpleNamespace(
-        chat=SimpleNamespace(
-            completions=SimpleNamespace(
-                create=create
-            )
-        )
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
     )
-
-    monkeypatch.setattr(
-        llm,
-        "_client",
-        fake,
-    )
-
+    monkeypatch.setattr(llm, "_client", fake)
     return calls
 
 
@@ -88,29 +52,16 @@ def _fake_sleep(monkeypatch):
     async def sleep(seconds):
         delays.append(seconds)
 
-    monkeypatch.setattr(
-        llm,
-        "_sleep",
-        sleep,
-    )
-
+    monkeypatch.setattr(llm, "_sleep", sleep)
     return delays
 
 
 @pytest.mark.asyncio
-async def test_success_returns_stripped_text_without_retries(
-    monkeypatch,
-):
-    calls = _fake_client(
-        monkeypatch,
-        ["  The answer.  "],
-    )
+async def test_success_returns_stripped_text_without_retries(monkeypatch):
+    calls = _fake_client(monkeypatch, ["  The answer.  "])
     delays = _fake_sleep(monkeypatch)
 
-    result = await llm.generate_text(
-        "A question",
-        temperature=0.1,
-    )
+    result = await llm.generate_text("A question", temperature=0.1)
 
     assert result == "The answer."
     assert len(calls) == 1
@@ -120,27 +71,15 @@ async def test_success_returns_stripped_text_without_retries(
 
 
 @pytest.mark.asyncio
-async def test_429_respects_retry_after_header(
-    monkeypatch,
-    caplog,
-):
+async def test_429_respects_retry_after_header(monkeypatch, caplog):
     calls = _fake_client(
         monkeypatch,
-        [
-            _status_error(
-                429,
-                retry_after="1.515",
-            ),
-            "Cited. [src_1]",
-        ],
+        [_status_error(429, retry_after="1.515"), "Cited. [src_1]"],
     )
-
     delays = _fake_sleep(monkeypatch)
 
     with caplog.at_level(logging.WARNING):
-        result = await llm.generate_text(
-            "question"
-        )
+        result = await llm.generate_text("question")
 
     assert result == "Cited. [src_1]"
     assert len(calls) == 2
@@ -150,20 +89,11 @@ async def test_429_respects_retry_after_header(
 
 
 @pytest.mark.asyncio
-async def test_429_reads_groq_wait_hint_when_header_missing(
-    monkeypatch,
-):
+async def test_429_reads_groq_wait_hint_when_header_missing(monkeypatch):
     _fake_client(
         monkeypatch,
-        [
-            _status_error(
-                429,
-                message="Please try again in 2.5s.",
-            ),
-            "OK",
-        ],
+        [_status_error(429, message="Please try again in 2.5s."), "OK"],
     )
-
     delays = _fake_sleep(monkeypatch)
 
     assert await llm.generate_text("question") == "OK"
@@ -171,18 +101,11 @@ async def test_429_reads_groq_wait_hint_when_header_missing(
 
 
 @pytest.mark.asyncio
-async def test_server_error_uses_exponential_backoff(
-    monkeypatch,
-):
+async def test_server_error_uses_exponential_backoff(monkeypatch):
     calls = _fake_client(
         monkeypatch,
-        [
-            _status_error(503),
-            _status_error(502),
-            "Recovered",
-        ],
+        [_status_error(503), _status_error(502), "Recovered"],
     )
-
     delays = _fake_sleep(monkeypatch)
 
     assert await llm.generate_text("question") == "Recovered"
@@ -191,24 +114,12 @@ async def test_server_error_uses_exponential_backoff(
 
 
 @pytest.mark.asyncio
-async def test_connection_error_is_retryable(
-    monkeypatch,
-):
-    request = httpx.Request(
-        "POST",
-        "https://api.groq.com/openai/v1/chat/completions",
-    )
-
+async def test_connection_error_is_retryable(monkeypatch):
+    request = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
     calls = _fake_client(
         monkeypatch,
-        [
-            APIConnectionError(
-                request=request
-            ),
-            "Connected",
-        ],
+        [APIConnectionError(request=request), "Connected"],
     )
-
     delays = _fake_sleep(monkeypatch)
 
     assert await llm.generate_text("question") == "Connected"
@@ -217,14 +128,8 @@ async def test_connection_error_is_retryable(
 
 
 @pytest.mark.asyncio
-async def test_authentication_error_is_not_retried(
-    monkeypatch,
-):
-    calls = _fake_client(
-        monkeypatch,
-        [_status_error(401)],
-    )
-
+async def test_authentication_error_is_not_retried(monkeypatch):
+    calls = _fake_client(monkeypatch, [_status_error(401)])
     delays = _fake_sleep(monkeypatch)
 
     with pytest.raises(APIStatusError) as caught:
@@ -236,22 +141,9 @@ async def test_authentication_error_is_not_retried(
 
 
 @pytest.mark.asyncio
-async def test_retries_stop_after_bounded_attempts(
-    monkeypatch,
-    caplog,
-):
-    errors = [
-        _status_error(429)
-        for _ in range(
-            llm.MAX_RETRIES + 1
-        )
-    ]
-
-    calls = _fake_client(
-        monkeypatch,
-        errors,
-    )
-
+async def test_retries_stop_after_bounded_attempts(monkeypatch, caplog):
+    errors = [_status_error(429) for _ in range(llm.MAX_RETRIES + 1)]
+    calls = _fake_client(monkeypatch, errors)
     delays = _fake_sleep(monkeypatch)
 
     with caplog.at_level(logging.ERROR):
@@ -265,20 +157,11 @@ async def test_retries_stop_after_bounded_attempts(
 
 
 @pytest.mark.asyncio
-async def test_empty_completion_is_not_retried(
-    monkeypatch,
-):
-    calls = _fake_client(
-        monkeypatch,
-        ["  "],
-    )
-
+async def test_empty_completion_is_not_retried(monkeypatch):
+    calls = _fake_client(monkeypatch, ["  "])
     delays = _fake_sleep(monkeypatch)
 
-    with pytest.raises(
-        RuntimeError,
-        match="empty response",
-    ):
+    with pytest.raises(RuntimeError, match="empty response"):
         await llm.generate_text("question")
 
     assert len(calls) == 1
@@ -286,20 +169,35 @@ async def test_empty_completion_is_not_retried(
 
 
 def test_backoff_is_capped_and_handles_invalid_server_wait():
-    assert llm._retry_delay(
-        _status_error(
-            429,
-            retry_after="garbage",
-        ),
-        7,
-    ) == 60.0
-
+    assert llm._retry_delay(_status_error(429, retry_after="garbage"), 7) == 60.0
     assert llm._parse_retry_after("NaN") is None
     assert llm._parse_retry_after("-2") == 0.0
-
     assert llm._server_wait_seconds(
-        _status_error(
-            429,
-            message="Please try again in 750ms.",
-        )
+        _status_error(429, message="Please try again in 750ms.")
     ) == pytest.approx(0.75)
+
+
+@pytest.mark.asyncio
+async def test_structured_generation_options_are_opt_in(monkeypatch):
+    calls = _fake_client(monkeypatch, ['{"verdict":"PASS"}', "Text answer"])
+    await llm.generate_text(
+        "Verify these claims",
+        response_format={"type": "json_object"},
+        reasoning_effort="low",
+        max_completion_tokens=1200,
+    )
+    assert calls[0]["response_format"] == {"type": "json_object"}
+    assert calls[0]["reasoning_effort"] == "low"
+    assert calls[0]["max_completion_tokens"] == 1200
+    assert await llm.generate_text("Normal question") == "Text answer"
+    assert "response_format" not in calls[1]
+    assert "reasoning_effort" not in calls[1]
+    assert "max_completion_tokens" not in calls[1]
+
+
+@pytest.mark.asyncio
+async def test_invalid_completion_budget_fails_before_provider(monkeypatch):
+    calls = _fake_client(monkeypatch, [])
+    with pytest.raises(ValueError, match="must be positive"):
+        await llm.generate_text("prompt", max_completion_tokens=0)
+    assert calls == []

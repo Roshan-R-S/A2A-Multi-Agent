@@ -30,3 +30,6 @@ Thumbs.db
 # Frontend dependencies and builds
 web/node_modules/
 web/dist/
+
+# Vite cache
+web/.vite/

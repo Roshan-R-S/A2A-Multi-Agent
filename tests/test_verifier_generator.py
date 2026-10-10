@@ -340,12 +340,14 @@ async def test_semantic_verifier_calls_llm(
         prompt: str,
         system_prompt: str,
         temperature: float,
+        **kwargs,
     ) -> str:
 
         captured["prompt"] = prompt
         captured["temperature"] = (
             temperature
         )
+        captured["options"] = kwargs
 
         return """
         {
@@ -388,6 +390,10 @@ async def test_semantic_verifier_calls_llm(
         captured["temperature"]
         == 0.0
     )
+    assert captured["options"]["response_format"]["json_schema"]["strict"] is True
+    assert captured["options"]["reasoning_effort"] == "low"
+    assert captured["options"]["max_completion_tokens"] == 1200
+
 
 
 # Regression tests for bold headings and abbreviated sentence boundaries.
@@ -431,130 +437,82 @@ def test_bold_factual_statement_is_not_automatically_exempt():
     ) == [draft]
 
 
-@pytest.mark.asyncio
-async def test_uncited_research_sentence_fails_without_llm(
-    monkeypatch,
-):
-    async def fake_generate_text(
-        *args,
-        **kwargs,
-    ):
-        raise AssertionError(
-            "LLM should not be called."
-        )
-
-    monkeypatch.setattr(
-        generator_module,
-        "generate_text",
-        fake_generate_text,
+def test_strict_verifier_schema_has_required_fields_and_closed_objects():
+    spec = generator_module._VERIFICATION_RESPONSE_FORMAT
+    assert spec["type"] == "json_schema"
+    assert spec["json_schema"]["strict"] is True
+    schema = spec["json_schema"]["schema"]
+    assert set(schema["required"]) == set(schema["properties"])
+    assert schema["additionalProperties"] is False
+    issue = schema["properties"]["issues"]["items"]
+    assert set(issue["required"]) == set(issue["properties"])
+    assert issue["additionalProperties"] is False
+    assert set(issue["properties"]["type"]["enum"]) == set(
+        generator_module.VerificationIssue.model_fields["type"].annotation.__args__
     )
 
+
+@pytest.mark.asyncio
+async def test_verifier_malformed_structured_result_fails_closed(monkeypatch):
+    calls = []
+
+    async def fake_generate_text(**kwargs):
+        calls.append(kwargs)
+        return '{"verdict": "PASS", "issues": [}'
+
+    monkeypatch.setattr(generator_module, "generate_text", fake_generate_text)
+    with pytest.raises(RuntimeError, match="invalid JSON"):
+        await EvidenceAwareVerifier().verify(make_request())
+    assert len(calls) == 1  # No additional Groq call to repair broken JSON.
+
+
+@pytest.mark.asyncio
+async def test_uncited_research_sentence_fails_without_llm(monkeypatch):
+    async def fake_generate_text(*args, **kwargs):
+        raise AssertionError("LLM should not be called.")
+
+    monkeypatch.setattr(generator_module, "generate_text", fake_generate_text)
     verifier = EvidenceAwareVerifier()
-
-    result = await verifier.verify(
-        make_request(
-            (
-                "RAG uses retrieved information "
-                "during generation. [src_1]\n"
-                "Retrieval quality matters."
-            )
-        )
-    )
-
+    result = await verifier.verify(make_request(
+        "RAG uses retrieved information during generation. [src_1]\n"
+        "Retrieval quality matters."
+    ))
     assert result.verdict == "FAIL"
-
     assert any(
-        (
-            issue.type
-            == "missing_citation"
-            and issue.statement
-            == "Retrieval quality matters."
-        )
-        for issue
-        in result.issues
+        issue.type == "missing_citation" and issue.statement == "Retrieval quality matters."
+        for issue in result.issues
     )
 
 
 @pytest.mark.asyncio
-async def test_fully_cited_sentences_reach_semantic_verifier(
-    monkeypatch,
-):
+async def test_fully_cited_sentences_reach_semantic_verifier(monkeypatch):
     captured = {}
 
-    async def fake_generate_text(
-        prompt: str,
-        system_prompt: str,
-        temperature: float,
-    ) -> str:
+    async def fake_generate_text(prompt: str, system_prompt: str,
+                                 temperature: float, **kwargs) -> str:
         captured["prompt"] = prompt
+        return '{"verdict": "PASS", "issues": [], "feedback": ""}'
 
-        return """
-        {
-            "verdict": "PASS",
-            "issues": [],
-            "feedback": ""
-        }
-        """
-
-    monkeypatch.setattr(
-        generator_module,
-        "generate_text",
-        fake_generate_text,
-    )
-
+    monkeypatch.setattr(generator_module, "generate_text", fake_generate_text)
     verifier = EvidenceAwareVerifier()
-
-    result = await verifier.verify(
-        make_request(
-            (
-                "RAG uses retrieved information "
-                "during generation. [src_1]\n"
-                "Retrieval quality matters. [src_1]"
-            )
-        )
-    )
-
+    result = await verifier.verify(make_request(
+        "RAG uses retrieved information during generation. [src_1]\n"
+        "Retrieval quality matters. [src_1]"
+    ))
     assert result.verdict == "PASS"
-
-    assert (
-        "WRITER DRAFT"
-        in captured["prompt"]
-    )
+    assert "WRITER DRAFT" in captured["prompt"]
 
 
 @pytest.mark.asyncio
-async def test_markdown_heading_is_not_missing_citation(
-    monkeypatch,
-):
-    async def fake_generate_text(
-        prompt: str,
-        system_prompt: str,
-        temperature: float,
-    ) -> str:
-        return """
-        {
-            "verdict": "PASS",
-            "issues": [],
-            "feedback": ""
-        }
-        """
+async def test_markdown_heading_is_not_missing_citation(monkeypatch):
+    async def fake_generate_text(prompt: str, system_prompt: str,
+                                 temperature: float, **kwargs) -> str:
+        return '{"verdict": "PASS", "issues": [], "feedback": ""}'
 
-    monkeypatch.setattr(
-        generator_module,
-        "generate_text",
-        fake_generate_text,
-    )
-
+    monkeypatch.setattr(generator_module, "generate_text", fake_generate_text)
     verifier = EvidenceAwareVerifier()
-
-    result = await verifier.verify(
-        make_request(
-            (
-                "### How RAG works\n"
-                "RAG uses retrieved information "
-                "during generation. [src_1]"
-            )
-        )
-    )
-
+    result = await verifier.verify(make_request(
+        "### How RAG works\n"
+        "RAG uses retrieved information during generation. [src_1]"
+    ))
     assert result.verdict == "PASS"

@@ -10,6 +10,15 @@ export type ChatReply = {
 }
 export type Message = { role: 'user' | 'assistant'; content: string; created_at?: string; route?: string; verified?: boolean; sources?: Source[] }
 export type Document = { id: number; title: string; chunks: number }
+export type DocumentSummary = {
+  document_id: number
+  title: string
+  answer: string
+  covered_chunks: number
+  segments: number
+  verified: boolean
+  sources: Source[]
+}
 export type Conversation = { id: string; messages: number; updated_at: string | null }
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -32,6 +41,10 @@ export const service = {
   upload: (filename: string, content: string) => api<Document>('/documents', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ filename, content }),
+  }),
+  summarizeDocument: (id: number, allowCloud: boolean) => api<DocumentSummary>(`/documents/${id}/summary`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ allow_cloud: allowCloud }),
   }),
   removeDocument: (id: number) => api<{ deleted: boolean }>(`/documents/${id}`, { method: 'DELETE' }),
   search: (query: string) => api<{ title: string; snippet: string }[]>(`/search?q=${encodeURIComponent(query)}`),
