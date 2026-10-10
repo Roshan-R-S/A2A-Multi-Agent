@@ -10,7 +10,8 @@ from pathlib import Path
 from uuid import uuid4
 from typing import Callable, Literal
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
 
@@ -66,6 +67,31 @@ def create_app(
         TrustedHostMiddleware,
         allowed_hosts=["127.0.0.1", "localhost", "testserver"],
     )
+
+    @app.middleware("http")
+    async def protect_local_api(request: Request, call_next):
+        # Browser requests from unrelated websites must not reach this local API.
+        # This is CSRF hardening, NOT a replacement for authentication.
+        path = request.url.path
+        if path == "/api" or path.startswith("/api/"):
+            origin = request.headers.get("origin")
+            allowed_origins = {
+                "http://127.0.0.1:5173", "http://localhost:5173",
+                "http://127.0.0.1:8010", "http://localhost:8010",
+                "http://testserver",
+            }
+            if (origin and origin not in allowed_origins) or request.headers.get("sec-fetch-site") == "cross-site":
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Cross-origin access to the local API is not allowed."},
+                    headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+                )
+        response = await call_next(request)
+        if path == "/api" or path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["Referrer-Policy"] = "no-referrer"
+        return response
 
     @app.get("/api/health")
     async def health():
@@ -234,9 +260,17 @@ def create_app(
     @app.get("/api/conversations/{conversation_id}")
     async def history(conversation_id: str):
         try:
-            return [vars(item) for item in memory.history(conversation_id, limit=200)]
+            _validate_conversation_id(conversation_id)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
+        # A nonexistent ID is a missing resource, not an empty conversation.
+        with connect(database) as con:
+            exists = con.execute(
+                "SELECT 1 FROM memory_conversations WHERE id=?", (conversation_id,)
+            ).fetchone()
+        if not exists:
+            raise HTTPException(404, "Conversation not found.")
+        return [vars(item) for item in memory.history(conversation_id, limit=200)]
 
     @app.delete("/api/conversations/{conversation_id}")
     async def forget(conversation_id: str):

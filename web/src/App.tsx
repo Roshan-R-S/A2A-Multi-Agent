@@ -8,6 +8,8 @@ import { ChatWorkspace } from './components/chat/ChatWorkspace'
 import { KnowledgeWorkspace } from './features/knowledge/KnowledgeWorkspace'
 import { AgentStation } from './features/agents/AgentStation'
 import { HistoryWorkspace } from './features/conversations/HistoryWorkspace'
+import { NotFoundPage } from './features/errors/NotFoundPage'
+import { pageFromPath, pathForPage } from './routing'
 
 function makeConversationId() {
   return `chat_${crypto.randomUUID().replaceAll('-', '').slice(0, 25)}`
@@ -19,7 +21,7 @@ function initialConversationId() {
 
 export default function App() {
   const { preference, setPreference } = useTheme()
-  const [page, setPage] = useState<Page>('chat')
+  const [page, setPageState] = useState<Page | null>(() => pageFromPath(window.location.pathname))
   const [conversationId, setConversationId] = useState(initialConversationId)
   const [messages, setMessages] = useState<Message[]>([])
   const [conversations, setConversations] = useState<Conversation[]>([])
@@ -34,6 +36,29 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const currentId = useRef(conversationId)
   currentId.current = conversationId
+
+
+  // URL state is the source of truth for navigation. Unknown routes never
+  // display conversation data; users see a 404 before returning home.
+  const setPage = useCallback((next: Page) => {
+    const path = pathForPage(next)
+    if (window.location.pathname !== path) window.history.pushState(null, '', path)
+    setPageState(next)
+  }, [])
+  const returnHome = useCallback(() => {
+    window.history.replaceState(null, '', '/')
+    setPageState('chat')
+  }, [])
+  useEffect(() => {
+    const handlePopState = () => setPageState(pageFromPath(window.location.pathname))
+    window.addEventListener('popstate', handlePopState)
+    return () => window.removeEventListener('popstate', handlePopState)
+  }, [])
+  useEffect(() => {
+    if (page !== null) return
+    const timer = window.setTimeout(returnHome, 5000)
+    return () => window.clearTimeout(timer)
+  }, [page, returnHome])
 
   const refresh = useCallback(async () => {
     const [hist, docs, health] = await Promise.allSettled([service.conversations(), service.documents(), service.health()])
@@ -111,6 +136,8 @@ export default function App() {
       }
     } finally { setLoading(false) }
   }
+
+  if (page === null) return <NotFoundPage onReturnHome={returnHome}/>
 
   return <div className="app-shell">
     <a href="#workspace-main" className="skip-link">Skip to main content</a>

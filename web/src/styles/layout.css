@@ -64,3 +64,15 @@
 .session-select svg {flex-shrink:0;opacity:.72}
 .chat-count {font-size:10px;font-weight:500;color:var(--text-secondary)}
 @media (hover:none) {.session-rename,.session-remove {opacity:1}}
+
+
+/* Safe unknown-route screen, matching the existing monochrome workspace. */
+.not-found-screen{min-height:100dvh;display:grid;place-items:center;padding:28px;background:var(--black);color:var(--text-primary)}
+.not-found-panel{width:min(100%,520px);border:1px solid var(--border-visible);background:var(--surface);padding:clamp(26px,5vw,54px);display:flex;flex-direction:column;align-items:flex-start;gap:16px}
+.not-found-label{display:flex;align-items:center;gap:8px;margin-top:36px;color:var(--text-secondary)}
+.not-found-code{font:500 clamp(78px,17vw,160px)/.9 var(--font-ui);letter-spacing:-.075em;color:var(--text-display);margin:0}
+.not-found-panel h1{font:500 28px/1.15 var(--font-ui);color:var(--text-display);margin:0}
+.not-found-panel>p:not(.not-found-code):not(.not-found-label){font:14px/1.6 var(--font-ui);color:var(--text-secondary);margin:0}
+.not-found-note{font-size:12px!important}
+.not-found-home{margin-top:14px;display:inline-flex;gap:10px;align-items:center;background:var(--text-display);color:var(--black);padding:12px 16px;font:600 12px var(--font-label);cursor:pointer;border:1px solid transparent}
+.not-found-home:hover{opacity:.86}.not-found-home:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
