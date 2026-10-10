@@ -26,3 +26,7 @@ htmlcov/
 Thumbs.db
 # Local knowledge and memory database
 .a2a_data/
+
+# Frontend dependencies and builds
+web/node_modules/
+web/dist/
