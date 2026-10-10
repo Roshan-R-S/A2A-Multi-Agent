@@ -1,5 +1,5 @@
-from agents.research.claims import LLMClaimGenerator
-from agents.research.evidence import SnippetEvidenceExtractor
+﻿from agents.research.claims import LLMClaimGenerator
+from agents.research.web_evidence import WebpageEvidenceExtractor
 from agents.research.pipeline import ResearchPipeline
 from agents.research.providers.tavily import TavilySearchProvider
 from agents.research.search import SearchService
@@ -39,7 +39,7 @@ def create_research_pipeline() -> ResearchPipeline:
     )
 
     evidence_extractor = (
-        SnippetEvidenceExtractor()
+        WebpageEvidenceExtractor()
     )
 
     claim_generator = (
