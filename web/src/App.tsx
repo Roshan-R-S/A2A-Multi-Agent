@@ -28,6 +28,7 @@ export default function App() {
   const [mode, setMode] = useState<Mode>('auto')
   const [cloud, setCloud] = useState(false)
   const [save, setSave] = useState(false)
+  const [useContext, setUseContext] = useState(false)
   const [draft, setDraft] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -60,13 +61,25 @@ export default function App() {
   }
 
   async function forget(conversation: Conversation) {
-    if (loading || !window.confirm(`Delete saved conversation “${conversation.id}”?`)) return
+    if (loading || !window.confirm(`Delete saved conversation “${conversation.title}”?`)) return
     setError('')
     try {
       await service.forget(conversation.id)
       await refresh()
       if (conversationId === conversation.id) newChat()
     } catch (e) { setError(e instanceof Error ? e.message : 'Unable to delete conversation.'); setPage('chat') }
+  }
+
+  async function rename(conversation: Conversation) {
+    if (loading) return
+    const value = window.prompt('Rename conversation (up to 80 characters):', conversation.title)
+    if (value === null) return
+    const title = value.trim().replace(/\s+/g, ' ')
+    if (!title || title.length > 80) {
+      setError('Conversation titles must contain 1–80 characters.'); setPage('chat'); return
+    }
+    try { await service.renameConversation(conversation.id, title); await refresh() }
+    catch (e) { setError(e instanceof Error ? e.message : 'Unable to rename conversation.'); setPage('chat') }
   }
 
   async function send() {
@@ -83,10 +96,11 @@ export default function App() {
     const idAtRequest = conversationId
     setMessages(previous => [...previous, { role: 'user', content }])
     try {
-      const response = await service.chat({ message: content, conversation_id: idAtRequest, mode, allow_cloud: cloud, save_history: save })
+      const response = await service.chat({ message: content, conversation_id: idAtRequest, mode, allow_cloud: cloud, save_history: save, use_context: useContext && cloud && mode !== 'search' })
       if (currentId.current === idAtRequest) {
         setMessages(previous => [...previous, { role: 'assistant', content: response.answer,
-          route: response.route, verified: response.verified, sources: response.sources }])
+          route: response.route, verified: response.verified, sources: response.sources,
+          context_message_count: response.context_used ? response.context_message_count : 0 }])
       }
       if (save) await refresh()
     } catch (e) {
@@ -101,16 +115,17 @@ export default function App() {
   return <div className="app-shell">
     <a href="#workspace-main" className="skip-link">Skip to main content</a>
     <Sidebar page={page} changePage={setPage} conversations={conversations} currentId={conversationId}
-      newChat={newChat} switchChat={switchChat} deleteChat={item => void forget(item)} disabled={loading} online={online}/>
+      newChat={newChat} switchChat={switchChat} deleteChat={item => void forget(item)} renameChat={item => void rename(item)} disabled={loading} online={online}/>
     <div className="main-column">
       <WorkspaceHeader page={page} online={online} preference={preference} onThemeChange={setPreference}/>
       <main id="workspace-main" className="workspace-main" tabIndex={-1}>
         {page === 'chat' && <ChatWorkspace messages={messages} loading={loading} error={error} clearError={() => setError('')}
           draft={draft} setDraft={setDraft} send={() => void send()} mode={mode} setMode={setMode}
-          cloud={cloud} setCloud={setCloud} save={save} setSave={setSave} newChat={newChat}/>}
+          cloud={cloud} setCloud={setCloud} save={save} setSave={setSave}
+          useContext={useContext} setUseContext={setUseContext} newChat={newChat}/>}
         {page === 'knowledge' && <KnowledgeWorkspace documents={documents} refresh={refresh} onAsk={() => {setMode('documents');setPage('chat')}}/>}
         {page === 'agents' && <AgentStation online={online}/>}
-        {page === 'history' && <HistoryWorkspace conversations={conversations} open={switchChat} remove={item => void forget(item)} busy={loading}/>}
+        {page === 'history' && <HistoryWorkspace conversations={conversations} open={switchChat} remove={item => void forget(item)} rename={item => void rename(item)} busy={loading}/>}
       </main>
       <MobileNavigation page={page} onChange={setPage}/>
     </div>

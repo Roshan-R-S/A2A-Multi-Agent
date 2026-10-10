@@ -1,4 +1,4 @@
-import { ArrowUp, BookOpen, Cloud, Database, History, Workflow } from 'lucide-react'
+import { ArrowUp, BookOpen, Cloud, Database, History, BrainCircuit, Workflow } from 'lucide-react'
 import type { KeyboardEvent } from 'react'
 import type { Mode } from '../../api'
 
@@ -13,7 +13,7 @@ const descriptions: Record<Mode,string> = {
   search: 'Keyword search on your SQLite index only. No external AI call.',
 }
 
-export function MessageComposer({ draft, onDraft, onSubmit, mode, onMode, cloud, onCloud, save, onSave, busy }: {
+export function MessageComposer({ draft, onDraft, onSubmit, mode, onMode, cloud, onCloud, save, onSave, useContext, onContext, busy }: {
   draft: string
   onDraft: (value: string) => void
   onSubmit: () => void
@@ -23,6 +23,8 @@ export function MessageComposer({ draft, onDraft, onSubmit, mode, onMode, cloud,
   onCloud: (next: boolean) => void
   save: boolean
   onSave: (next: boolean) => void
+  useContext: boolean
+  onContext: (next: boolean) => void
   busy: boolean
 }) {
   const onKey = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -47,7 +49,8 @@ export function MessageComposer({ draft, onDraft, onSubmit, mode, onMode, cloud,
     <div className="composer-consent">
       <label><input type="checkbox" checked={cloud} onChange={event => onCloud(event.target.checked)} disabled={busy}/><Cloud size={14} aria-hidden="true"/> ALLOW EXTERNAL AI</label>
       <label><input type="checkbox" checked={save} onChange={event => onSave(event.target.checked)} disabled={busy}/><History size={14} aria-hidden="true"/> SAVE HISTORY</label>
+      <label title="Include up to six recent saved messages in external AI requests; separate from saving new messages"><input type="checkbox" checked={useContext} onChange={event => onContext(event.target.checked)} disabled={busy || !cloud || mode === 'search'}/><BrainCircuit size={14} aria-hidden="true"/> USE SAVED CONTEXT</label>
     </div>
-    <p className="composer-description">{descriptions[mode]} {mode !== 'search' && !cloud ? ' External AI is currently disabled.' : ''}</p>
+    <p className="composer-description">{descriptions[mode]} {mode !== 'search' && !cloud ? ' External AI is currently disabled.' : ''} {useContext && cloud && mode !== 'search' ? 'Up to six recent saved messages from this chat may be sent to external AI/search services.' : ''}</p>
   </div>
 }

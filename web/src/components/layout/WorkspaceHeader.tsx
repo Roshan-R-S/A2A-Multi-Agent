@@ -2,7 +2,7 @@ import { CircleHelp, Moon, Sun, Monitor } from 'lucide-react'
 import type { ThemePreference } from '../../hooks/useTheme'
 
 export type Page = 'chat' | 'knowledge' | 'agents' | 'history'
-const titles: Record<Page, string> = { chat: 'CONVERSATION', knowledge: 'KNOWLEDGE BASE', agents: 'CONTROL STATION', history: 'SAVED SESSIONS' }
+const titles: Record<Page, string> = { chat: 'CONVERSATION', knowledge: 'KNOWLEDGE BASE', agents: 'CONTROL STATION', history: 'CONVERSATIONS' }
 
 export function WorkspaceHeader({ page, online, preference, onThemeChange }: {
   page: Page

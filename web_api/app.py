@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from knowledge.db import connect, default_db_path
 from knowledge.store import KnowledgeStore, SummaryLimitError
 from memory.store import ConversationMemory, _validate_conversation_id
+from orchestrator.conversation_context import contextualize
 
 logger = logging.getLogger(__name__)
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
@@ -29,6 +30,10 @@ class UploadBody(BaseModel):
     content: str = Field(min_length=1, max_length=MAX_UPLOAD_BYTES)
 
 
+class RenameConversationBody(BaseModel):
+    title: str = Field(min_length=1, max_length=80)
+
+
 class DocumentSummaryBody(BaseModel):
     allow_cloud: bool = False
 
@@ -39,6 +44,7 @@ class ChatBody(BaseModel):
     mode: Literal["auto", "documents", "search"] = "auto"
     allow_cloud: bool = False
     save_history: bool = False
+    use_context: bool = False
 
 
 def create_app(
@@ -202,13 +208,28 @@ def create_app(
     async def conversations():
         with connect(database) as con:
             rows = con.execute(
-                """SELECT c.id AS id, COUNT(m.id) AS messages,
+                """SELECT c.id AS id, COALESCE(c.title, 'Untitled conversation') AS title, COUNT(m.id) AS messages,
                           MAX(m.created_at) AS updated_at
                    FROM memory_conversations AS c
                    LEFT JOIN memory_messages AS m ON m.conversation_id=c.id
                    GROUP BY c.id ORDER BY updated_at DESC, c.id LIMIT 100"""
             ).fetchall()
         return [dict(row) for row in rows]
+
+    @app.patch("/api/conversations/{conversation_id}")
+    async def rename_conversation(conversation_id: str, body: RenameConversationBody):
+        try:
+            updated = memory.rename_conversation(conversation_id, body.title)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        if not updated:
+            raise HTTPException(404, "Conversation not found.")
+        # Return the normalized persisted title, not the untrusted request body.
+        with connect(database) as con:
+            row = con.execute(
+                "SELECT title FROM memory_conversations WHERE id=?", (conversation_id,)
+            ).fetchone()
+        return {"id": conversation_id, "title": row["title"]}
 
     @app.get("/api/conversations/{conversation_id}")
     async def history(conversation_id: str):
@@ -235,6 +256,9 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 
+        if body.mode == "search" and body.use_context:
+            raise HTTPException(422, "Conversation context is not available in offline Local Search.")
+
         if body.mode != "search" and not body.allow_cloud:
             raise HTTPException(
                 403,
@@ -242,6 +266,14 @@ def create_app(
                 "external services. For Documents mode, matching document "
                 "passages are sent to Groq. Enable cloud consent or use Search.",
             )
+
+        context_message_count = 0
+        contextual_question = question
+        if body.use_context:
+            # Do not touch saved history before checking both cloud and context consent.
+            context = contextualize(memory, body.conversation_id, question)
+            contextual_question = context.prompt
+            context_message_count = context.message_count
 
         try:
             if body.mode == "search":
@@ -265,7 +297,7 @@ def create_app(
                     workflow = LocalRAGWorkflow(knowledge=knowledge, memory=memory)
                 else:
                     workflow = rag_factory()
-                result = await workflow.run(question, allow_cloud=True, save_history=False)
+                result = await workflow.run(contextual_question, allow_cloud=True, save_history=False)
                 answer = result.answer
                 verified = result.verified
                 route = "documents"
@@ -279,7 +311,7 @@ def create_app(
                     workflow = RoutedWorkflow()
                 else:
                     workflow = routed_factory()
-                result = await workflow.run(question)
+                result = await workflow.run(contextual_question)
                 answer = result.final_answer
                 route = result.decision.route
                 verified = result.verified
@@ -306,7 +338,9 @@ def create_app(
             ) from exc
         return {"answer": answer, "route": route, "verified": verified,
                 "sources": sources, "saved": body.save_history,
-                "conversation_id": body.conversation_id}
+                "conversation_id": body.conversation_id,
+                "context_used": context_message_count > 0,
+                "context_message_count": context_message_count}
 
     return app
 

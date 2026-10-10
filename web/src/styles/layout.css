@@ -22,8 +22,8 @@
 .session-select:hover,.session-item.active .session-select {color:var(--text-primary)}
 .session-number {font:10px var(--font-label);color:var(--text-disabled)}
 .session-name {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
-.session-remove {opacity:0;width:38px;height:44px}
-.session-item:hover .session-remove,.session-remove:focus-visible {opacity:1}
+.session-rename,.session-remove {opacity:0;width:29px;height:44px;flex-shrink:0}
+.session-item:hover .session-rename,.session-item:hover .session-remove,.session-rename:focus-visible,.session-remove:focus-visible {opacity:1}
 .sidebar-foot {border-top:1px solid var(--border);height:63px;display:flex;align-items:center;gap:9px;font:10px var(--font-label);color:var(--text-secondary)}
 .sidebar-foot .mono-number {margin-left:auto;color:var(--text-disabled)}
 .main-column {display:flex;flex-direction:column;flex:1;min-width:0;min-height:0;overflow:hidden}
@@ -59,3 +59,8 @@
   .mobile-nav button[aria-current='page']{color:var(--text-display);border-top:2px solid var(--accent)}
 }
 @media(max-width:400px){.header-location{font-size:10px}.theme-control{padding:0 5px}.theme-control select{font-size:10px;max-width:70px}}
+
+/* Display privacy-friendly conversation titles; IDs remain internal. */
+.session-select svg {flex-shrink:0;opacity:.72}
+.chat-count {font-size:10px;font-weight:500;color:var(--text-secondary)}
+@media (hover:none) {.session-rename,.session-remove {opacity:1}}

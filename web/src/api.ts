@@ -7,8 +7,10 @@ export type ChatReply = {
   sources: Source[]
   saved: boolean
   conversation_id: string
+  context_used: boolean
+  context_message_count: number
 }
-export type Message = { role: 'user' | 'assistant'; content: string; created_at?: string; route?: string; verified?: boolean; sources?: Source[] }
+export type Message = { role: 'user' | 'assistant'; content: string; created_at?: string; route?: string; verified?: boolean; sources?: Source[]; context_message_count?: number }
 export type Document = { id: number; title: string; chunks: number }
 export type DocumentSummary = {
   document_id: number
@@ -19,7 +21,7 @@ export type DocumentSummary = {
   verified: boolean
   sources: Source[]
 }
-export type Conversation = { id: string; messages: number; updated_at: string | null }
+export type Conversation = { id: string; title: string; messages: number; updated_at: string | null }
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`/api${path}`, options)
@@ -51,6 +53,9 @@ export const service = {
   conversations: () => api<Conversation[]>('/conversations'),
   history: (id: string) => api<Message[]>(`/conversations/${encodeURIComponent(id)}`),
   forget: (id: string) => api<{ deleted: boolean }>(`/conversations/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  chat: (args: { message: string; conversation_id: string; mode: Mode; allow_cloud: boolean; save_history: boolean }) =>
+  renameConversation: (id: string, title: string) => api<{ id: string; title: string }>(`/conversations/${encodeURIComponent(id)}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title }),
+  }),
+  chat: (args: { message: string; conversation_id: string; mode: Mode; allow_cloud: boolean; save_history: boolean; use_context: boolean }) =>
     api<ChatReply>('/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(args) }),
 }
