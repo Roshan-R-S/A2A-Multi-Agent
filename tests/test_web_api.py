@@ -129,7 +129,7 @@ def test_document_route_returns_citations_and_saves_opted_in_history(api):
     assert [item["role"] for item in history] == ["user", "assistant"]
     assert len(client.get("/api/conversations").json()) == 1
     assert client.delete("/api/conversations/session1").json()["deleted"] is True
-    assert client.get("/api/conversations/session1").json() == []
+    assert client.get("/api/conversations/session1").status_code == 404
 
 
 def test_invalid_conversation_id_is_rejected(api):
