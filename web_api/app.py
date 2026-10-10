@@ -15,7 +15,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
 
 from knowledge.db import connect, default_db_path
-from knowledge.store import KnowledgeStore
+from knowledge.store import KnowledgeStore, SummaryLimitError
 from memory.store import ConversationMemory, _validate_conversation_id
 
 logger = logging.getLogger(__name__)
@@ -27,6 +27,10 @@ NAME_RE = re.compile(r'^[^\\/<>:"|?*\x00-\x1f\x7f]{1,120}$')
 class UploadBody(BaseModel):
     filename: str = Field(min_length=1, max_length=120)
     content: str = Field(min_length=1, max_length=MAX_UPLOAD_BYTES)
+
+
+class DocumentSummaryBody(BaseModel):
+    allow_cloud: bool = False
 
 
 class ChatBody(BaseModel):
@@ -44,6 +48,7 @@ def create_app(
     memory: ConversationMemory | None = None,
     routed_factory: Callable | None = None,
     rag_factory: Callable | None = None,
+    summary_factory: Callable | None = None,
 ) -> FastAPI:
     database = Path(db_path).expanduser() if db_path is not None else default_db_path()
     knowledge = knowledge if knowledge is not None else KnowledgeStore(database)
@@ -123,6 +128,62 @@ def create_app(
             path.unlink(missing_ok=True)
             path.parent.rmdir()
         return {"deleted": deleted}
+
+    @app.post("/api/documents/{document_id}/summary")
+    async def summarize_document(document_id: int, body: DocumentSummaryBody):
+        if not body.allow_cloud:
+            raise HTTPException(
+                403, "Explicit cloud consent required: summarization sends "
+                "indexed document content to Groq."
+            )
+        if document_id <= 0:
+            raise HTTPException(404, "Document not found.")
+        try:
+            if summary_factory is None:
+                from orchestrator.document_summary import DocumentSummaryWorkflow
+                workflow = DocumentSummaryWorkflow(knowledge=knowledge)
+            else:
+                workflow = summary_factory()
+            result = await workflow.run(document_id, allow_cloud=True)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except SummaryLimitError as exc:
+            raise HTTPException(413, str(exc)) from exc
+        except (PermissionError, ValueError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except Exception as exc:
+            # A2A transport errors may wrap a Groq 413/429 as an InternalError.
+            # Keep the provider's account/org details out of HTTP responses.
+            message = str(exc).casefold()
+            if "request too large for model" in message and "tokens per minute" in message:
+                logger.warning("Groq rejected an oversized document-summary request.")
+                raise HTTPException(
+                    429, "Groq rejected an oversized model request under the "
+                    "current tokens-per-minute limit. Reduce the source size "
+                    "or adjust the summary workflow budget. Retrying the "
+                    "identical oversized request will not fix it."
+                ) from exc
+            if ("rate_limit_exceeded" in message or "http 429" in message
+                    or "error code: 429" in message):
+                logger.warning("Groq rate limit reached during document summary.")
+                raise HTTPException(
+                    429, "Groq's rate limit was reached. Wait for the "
+                    "provider's retry window before running the summary again."
+                ) from exc
+            logger.exception("Document summary workflow failed")
+            raise HTTPException(
+                502, "Document summarization failed. Check Groq availability and "
+                "that the Writer and Verifier agents are running."
+            ) from exc
+        return {
+            "document_id": result.document_id,
+            "title": result.title,
+            "answer": result.answer,
+            "covered_chunks": result.covered_chunks,
+            "segments": result.segments,
+            "verified": result.verified,
+            "sources": result.sources,
+        }
 
     @app.get("/api/search")
     async def search(q: str = Query(min_length=1, max_length=500), limit: int = Query(5, ge=1, le=20)):

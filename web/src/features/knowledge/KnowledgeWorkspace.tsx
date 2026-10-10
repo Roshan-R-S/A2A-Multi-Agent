@@ -1,6 +1,7 @@
 import { useRef, useState, type FormEvent } from 'react'
-import { ArrowRight, Database, FilePlus2, FileText, Search, Trash2, X } from 'lucide-react'
-import type { Document } from '../../api'
+import { ArrowRight, BookOpenText, Database, FilePlus2, FileText, Search, Trash2, X } from 'lucide-react'
+import type { Document, DocumentSummary } from '../../api'
+import { MarkdownContent } from '../../components/chat/MarkdownContent'
 import { service } from '../../api'
 
 type SearchResult = { title: string; snippet: string }
@@ -15,6 +16,9 @@ export function KnowledgeWorkspace({ documents, refresh, onAsk }: {
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [allowSummaryCloud, setAllowSummaryCloud] = useState(false)
+  const [summarizingId, setSummarizingId] = useState<number | null>(null)
+  const [summary, setSummary] = useState<DocumentSummary | null>(null)
 
   async function upload(file?: File) {
     if (!file) return
@@ -40,10 +44,25 @@ export function KnowledgeWorkspace({ documents, refresh, onAsk }: {
     finally { setSearching(false) }
   }
 
+  async function summarize(doc: Document) {
+    if (summarizingId !== null) return
+    if (!allowSummaryCloud) {
+      setError('Enable the cloud permission below before summarizing. This sends indexed document content to Groq.')
+      return
+    }
+    setError(''); setNotice(''); setSummary(null); setSummarizingId(doc.id)
+    try {
+      const result = await service.summarizeDocument(doc.id, true)
+      setSummary(result)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Document summarization failed.')
+    } finally { setSummarizingId(null) }
+  }
+
   async function remove(doc: Document) {
     if (!window.confirm(`Delete indexed document “${doc.title}”?`)) return
     setError(''); setNotice('')
-    try { await service.removeDocument(doc.id); await refresh(); setResults(null); setNotice(`Removed ${doc.title}.`) }
+    try { await service.removeDocument(doc.id); await refresh(); setResults(null); if (summary?.document_id === doc.id) setSummary(null); setNotice(`Removed ${doc.title}.`) }
     catch (e) { setError(e instanceof Error ? e.message : 'Unable to delete document.') }
   }
 
@@ -62,9 +81,32 @@ export function KnowledgeWorkspace({ documents, refresh, onAsk }: {
       {documents.length ? documents.map((doc, index) => <div className="document-row" key={doc.id}>
         <span className="document-index">{String(index + 1).padStart(2, '0')}</span><FileText size={18} aria-hidden="true"/>
         <div className="document-info"><strong>{doc.title}</strong><span>DOCUMENT {doc.id} / {doc.chunks} CHUNKS</span></div>
-        <button className="icon-button" onClick={()=>void remove(doc)} title="Delete document" aria-label={`Remove ${doc.title}`}><Trash2 size={17}/></button>
+        <button className="action-button summary-action" type="button" disabled={summarizingId !== null}
+          aria-label={`Summarize ${doc.title}`} onClick={()=>void summarize(doc)}>
+          <BookOpenText size={15}/>{summarizingId === doc.id ? 'SUMMARIZING…' : 'SUMMARIZE'}
+        </button>
+        <button className="icon-button" onClick={()=>void remove(doc)} disabled={summarizingId !== null} title="Delete document" aria-label={`Remove ${doc.title}`}><Trash2 size={17}/></button>
       </div>) : <div className="empty-section"><Database size={25} aria-hidden="true"/><p>NO DOCUMENTS INDEXED</p><span>Add a Markdown or text file to create your local index.</span></div>}
     </div>
+    <div className="summary-privacy-control">
+      <label><input type="checkbox" checked={allowSummaryCloud} disabled={summarizingId !== null}
+        onChange={e=>setAllowSummaryCloud(e.target.checked)}/>
+        <span>ALLOW EXTERNAL AI FOR DOCUMENT SUMMARIES</span></label>
+      <p>Summarizing sends all indexed content from the selected document to Groq.
+        Limit: 48,000 indexed characters / 80 chunks. Local search stays offline.</p>
+    </div>
+    {summary && <section className="document-summary-panel" aria-label="Document summary" aria-live="polite">
+      <div className="summary-panel-head"><span className="eyebrow">FULL-DOCUMENT SUMMARY / {summary.title}</span>
+        <button className="icon-button" aria-label="Close summary" onClick={()=>setSummary(null)}><X size={18}/></button></div>
+      <p className="minor-text">{summary.covered_chunks} CHUNKS READ / {summary.segments} SEGMENTS PROCESSED
+        {summary.verified ? ' / VERIFIED AGAINST SUMMARY NOTES' : ' / NOT AGENT VERIFIED'}</p>
+      {!summary.verified && <p className="inline-error" role="status">Agent verification did not pass. Showing attributed segment notes instead of a verified summary. Check the original document before relying on these notes.</p>}
+      <MarkdownContent text={summary.answer}/>
+      <div className="summary-source-list"><span className="eyebrow">INDEXED DOCUMENT PARTS</span>
+        {summary.sources.map(item=><span key={item.id}>[{item.id}] {item.title}</span>)}
+      </div>
+      <p className="knowledge-privacy">Source-grounded AI summary, not a lossless reproduction or external fact-check.</p>
+    </section>}
     <div className="knowledge-search-section"><div className="eyebrow">RETRIEVE / LOCAL ONLY</div>
       <h2>Search your documents.</h2>
       <form className="knowledge-search-form" onSubmit={e=>void search(e)}>

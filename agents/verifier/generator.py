@@ -56,7 +56,10 @@ dropped_caveat
 contradiction
 other
 
-Return valid JSON only.
+Return valid JSON only. Keep the JSON brief: each issue's statement and
+feedback should be one short sentence; report at most four priority issues.
+If there are additional problems, mention them concisely in overall feedback.
+For PASS return empty issues and empty feedback.
 
 PASS example:
 
@@ -89,6 +92,49 @@ Rules:
 - Only use source IDs supplied in the research.
 - Do not wrap the JSON in Markdown fences.
 """.strip()
+
+
+# Groq GPT-OSS-120B supports strict JSON-schema structured outputs.
+# A schema-constrained response avoids truncated/malformed JSON text without
+# spending another Groq request on JSON repair. Semantic checks still apply.
+_VERIFICATION_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "a2a_verification",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "verdict": {"type": "string", "enum": ["PASS", "FAIL"]},
+                "issues": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": [
+                                    "missing_citation", "unknown_citation",
+                                    "unsupported_claim", "citation_mismatch",
+                                    "changed_fact", "overstated_certainty",
+                                    "dropped_caveat", "contradiction", "other",
+                                ],
+                            },
+                            "statement": {"type": "string"},
+                            "source_ids": {"type": "array", "items": {"type": "string"}},
+                            "feedback": {"type": "string"},
+                        },
+                        "required": ["type", "statement", "source_ids", "feedback"],
+                        "additionalProperties": False,
+                    },
+                },
+                "feedback": {"type": "string"},
+            },
+            "required": ["verdict", "issues", "feedback"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 
 _CITATION_RE = re.compile(r"\[src_\d+\]", re.IGNORECASE)
@@ -314,6 +360,9 @@ class EvidenceAwareVerifier:
             prompt=context,
             system_prompt=VERIFIER_SYSTEM_PROMPT,
             temperature=0.0,
+            response_format=_VERIFICATION_RESPONSE_FORMAT,
+            reasoning_effort="low",
+            max_completion_tokens=1200,
         )
 
         known_sources = {

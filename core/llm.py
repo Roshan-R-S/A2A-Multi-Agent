@@ -1,4 +1,4 @@
-﻿"""Shared Groq client with bounded automatic retries."""
+"""Shared Groq text-generation client with bounded transient-error retries."""
 
 import asyncio
 import logging
@@ -14,10 +14,12 @@ from core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Total attempts = 1 initial attempt + MAX_RETRIES retries.
 MAX_RETRIES = 3
 BASE_RETRY_DELAY_SECONDS = 1.0
 MAX_RETRY_DELAY_SECONDS = 60.0
 
+# Avoid nesting the SDK's implicit retry policy inside our own.
 _client = AsyncGroq(
     api_key=settings.groq_api_key,
     max_retries=0,
@@ -25,6 +27,7 @@ _client = AsyncGroq(
 
 
 async def _sleep(seconds: float) -> None:
+    """Isolated so retry tests never wait or contact Groq."""
     await asyncio.sleep(seconds)
 
 
@@ -33,15 +36,13 @@ def _is_retryable(error: Exception) -> bool:
         return True
 
     if isinstance(error, APIStatusError):
-        return (
-            error.status_code in (408, 409, 429)
-            or error.status_code >= 500
-        )
+        return error.status_code in (408, 409, 429) or error.status_code >= 500
 
     return False
 
 
 def _parse_retry_after(value: str | None) -> float | None:
+    """Parse Retry-After seconds (including decimals) or an HTTP date."""
     if not value:
         return None
 
@@ -66,21 +67,21 @@ def _parse_retry_after(value: str | None) -> float | None:
 
 
 def _server_wait_seconds(error: Exception) -> float | None:
+    """Prefer Retry-After; otherwise parse Groq's human-readable wait hint."""
     if isinstance(error, APIStatusError):
         retry_after = _parse_retry_after(
             error.response.headers.get("retry-after")
         )
-
         if retry_after is not None:
             return retry_after
 
+    # Groq can return e.g. "Please try again in 1.515s."
     match = re.search(
         r"please\s+try\s+again\s+in\s+"
         r"(\d+(?:\.\d+)?)\s*(ms|s|seconds?|m|minutes?)\b",
         str(error),
         flags=re.IGNORECASE,
     )
-
     if match is None:
         return None
 
@@ -89,19 +90,14 @@ def _server_wait_seconds(error: Exception) -> float | None:
 
     if unit == "ms":
         return amount / 1000.0
-
     if unit.startswith("m"):
         return amount * 60.0
-
     return amount
 
 
 def _retry_delay(error: Exception, retry_number: int) -> float:
-    backoff = (
-        BASE_RETRY_DELAY_SECONDS
-        * (2 ** (retry_number - 1))
-    )
-
+    """Choose bounded exponential backoff, honoring short server hints."""
+    backoff = BASE_RETRY_DELAY_SECONDS * (2 ** (retry_number - 1))
     server_wait = _server_wait_seconds(error)
 
     if server_wait is not None:
@@ -114,46 +110,62 @@ async def generate_text(
     prompt: str,
     system_prompt: str = "You are a helpful AI assistant.",
     temperature: float = 0.2,
+    *,
+    response_format: dict | None = None,
+    reasoning_effort: str | None = None,
+    max_completion_tokens: int | None = None,
 ) -> str:
-    """Generate text, retrying transient Groq failures."""
+    """Generate text with retries for rate limits and transient Groq errors.
+
+    Never retry invalid credentials, invalid requests, or empty completions.
+    Preserve exception types on retry exhaustion for upstream handling.
+    """
+    # Preserve identical request behavior for all existing non-structured calls.
+    # Structured output is opt-in; only the Verifier enables it.
+    options: dict = {}
+    if response_format is not None:
+        options["response_format"] = response_format
+    if reasoning_effort is not None:
+        options["reasoning_effort"] = reasoning_effort
+    if max_completion_tokens is not None:
+        if max_completion_tokens < 1:
+            raise ValueError("max_completion_tokens must be positive")
+        options["max_completion_tokens"] = max_completion_tokens
 
     for attempt in range(MAX_RETRIES + 1):
         try:
             response = await _client.chat.completions.create(
                 model=settings.groq_model,
                 messages=[
-                    {
-                        "role": "system",
-                        "content": system_prompt,
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    },
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt},
                 ],
                 temperature=temperature,
+                **options,
             )
-
         except (APIConnectionError, APIStatusError) as error:
             if not _is_retryable(error):
                 raise
 
             if attempt >= MAX_RETRIES:
                 logger.error(
-                    "Groq request failed after %d attempts.",
+                    "Groq request failed after %d attempts (%s).",
                     MAX_RETRIES + 1,
+                    (
+                        f"HTTP {error.status_code}"
+                        if isinstance(error, APIStatusError)
+                        else type(error).__name__
+                    ),
                 )
                 raise
 
             retry_number = attempt + 1
             delay = _retry_delay(error, retry_number)
-
             reason = (
                 f"HTTP {error.status_code}"
                 if isinstance(error, APIStatusError)
                 else type(error).__name__
             )
-
             logger.warning(
                 "Groq request failed (%s); retry %d/%d in %.2fs.",
                 reason,
@@ -161,19 +173,13 @@ async def generate_text(
                 MAX_RETRIES,
                 delay,
             )
-
             await _sleep(delay)
             continue
 
         content = response.choices[0].message.content
-
         if not content or not content.strip():
-            raise RuntimeError(
-                "Groq returned an empty response."
-            )
+            raise RuntimeError("Groq returned an empty response.")
 
         return content.strip()
 
-    raise RuntimeError(
-        "Groq retry loop ended unexpectedly."
-    )
+    raise RuntimeError("Groq retry loop ended unexpectedly.")
